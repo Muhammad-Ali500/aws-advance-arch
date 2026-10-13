@@ -2,9 +2,10 @@
 
 A test architecture: two frontends (**dev-ui** for end users, **dev-admin**
 for admins) deployed to **AWS Amplify Hosting**, a **FastAPI backend** on
-**ECS Fargate** behind an **Application Load Balancer**, and **AWS Cognito**
+**ECS Fargate** behind an **Application Load Balancer**, **AWS Cognito**
 for user management (one User Pool, two App Clients, an "Admins" group for
-role-based access control).
+role-based access control), and **DynamoDB** for data storage (one table,
+on-demand billing, partitioned per-user).
 
 See `cost.txt` for the full real-pricing cost estimate (~3 hour test) and
 `AWS_DEPLOYMENT_GUIDE.md` for the complete, concept-by-concept Console
@@ -16,38 +17,47 @@ walkthrough.
 dev-ui (Amplify) --\
                      \
 dev-admin (Amplify) --+--> backend (ECS Fargate, behind ALB) --> Cognito (JWT verification)
+                                                             \--> DynamoDB (per-user items)
 ```
 
 Both frontends authenticate directly against Cognito (client-side, via
 `amazon-cognito-identity-js`) and call the backend with the resulting JWT
 access token. The backend verifies the token's signature against Cognito's
-JWKS and checks `cognito:groups` for admin-only endpoints.
+JWKS, checks `cognito:groups` for admin-only endpoints, and reads/writes
+each user's items in DynamoDB keyed by their verified `sub` claim.
 
 ## Services
 
 - `dev-ui/` - end-user app: sign up, confirm, sign in, call `/api/me`
 - `dev-admin/` - admin app: sign in (no self-signup), call `/api/admin/stats`
   (requires "Admins" group membership)
-- `backend/` - FastAPI, verifies Cognito JWTs, two protected endpoints plus
-  one public health check
+- `backend/` - FastAPI, verifies Cognito JWTs, reads/writes items in
+  DynamoDB (`db.py`), plus a public health check
 
 ## Local testing (already done, all passing)
 
 Uses [`cognito-local`](https://github.com/jagregory/cognito-local) to
-emulate real AWS Cognito locally - same code, zero changes needed to point
-at real Cognito later.
+emulate real AWS Cognito, and AWS's own official `amazon/dynamodb-local`
+image to emulate real DynamoDB - same code, zero changes needed to point
+at real AWS later.
 
 ```bash
-# 1. Start cognito-local
+# 1. Start cognito-local and DynamoDB Local
 cd local-testing
 docker build -f cognito-local.Dockerfile -t cognito-local-test .
 docker run -d -p 9229:9229 --name cognito-local-run cognito-local-test
+docker run -d -p 8500:8000 --name dynamodb-local-run amazon/dynamodb-local
+# ^ host port 8500 here only because 8000 was already taken by another
+#   local project on this machine - use 8000 if yours is free, and adjust
+#   DYNAMODB_ENDPOINT_URL below to match whichever port you actually used
 
-# 2. Seed it with a User Pool, both App Clients, an Admins group, and 2 test users
+# 2. Seed cognito-local (User Pool, both App Clients, Admins group, 2 test users)
+# and create the DynamoDB table
 cd ..
 pip install boto3
 python local-testing/seed_cognito_local.py
 # ^ prints the exact IDs/env values you need for the next steps
+python local-testing/create_dynamodb_table.py
 
 # 3. Build + run the backend with those values
 cd backend
@@ -56,6 +66,9 @@ docker run -d -p 8080:8080 \
   -e COGNITO_ISSUER="http://localhost:9229/<POOL_ID>" \
   -e COGNITO_JWKS_URL="http://host.docker.internal:9229/<POOL_ID>/.well-known/jwks.json" \
   -e COGNITO_APP_CLIENT_IDS="<DEV_UI_CLIENT_ID>,<DEV_ADMIN_CLIENT_ID>" \
+  -e DYNAMODB_TABLE_NAME="aws-advance-arch-items" \
+  -e DYNAMODB_ENDPOINT_URL="http://host.docker.internal:8500" \
+  -e AWS_REGION="us-east-1" \
   --name backend-test aws-advance-arch-backend
 
 # 4. Build + run each frontend (Vite bakes these in at BUILD time)
@@ -83,6 +96,13 @@ the admin endpoint, 200 for an admin calling it, and 401 for a malformed
 token. Both frontends confirmed to build correctly with their own isolated
 Cognito client IDs baked in (dev-admin's build does not contain dev-ui's
 client ID, and vice versa).
+
+**DynamoDB integration also verified end-to-end:** created items as one
+user, confirmed `GET /api/items` as a *different* user only shows that
+user's own items (never the first user's) - proving the per-user isolation
+actually works, not just that the endpoints return 200 - while the admin
+stats endpoint correctly counted items across both users via a full-table
+scan.
 
 ## Deployment
 

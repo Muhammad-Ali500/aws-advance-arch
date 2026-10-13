@@ -51,13 +51,17 @@ someone building this on AWS for the first time.
               |  (FastAPI backend)|
               +---------+---------+
                         |
-                        v  verifies JWT signature + claims
-              +-------------------+
-              |   AWS Cognito     |
-              |   User Pool       |
-              | (+ Admins group)  |
-              +-------------------+
+                        |  verifies JWT signature + claims
+                        v
+              +-------------------+        +--------------------+
+              |   AWS Cognito     |         |     DynamoDB       |
+              |   User Pool       |         | aws-advance-arch-  |
+              | (+ Admins group)  |         |   items table      |
+              +-------------------+         +--------------------+
 ```
+
+The backend calls both Cognito (to verify who's calling) and DynamoDB (to
+read/write that user's items) on every authenticated request.
 
 | Piece | Why it's here |
 |---|---|
@@ -68,6 +72,8 @@ someone building this on AWS for the first time.
 | **Cognito User Pool** | Handles sign-up, sign-in, and issues the JWT access tokens both frontends use to call the backend. One pool, shared by both apps. |
 | **Cognito "Admins" group** | The authorization boundary — `dev-admin`'s API calls only succeed if the signed-in user is in this group; `dev-ui` users normally aren't. |
 | **Two App Clients** | Cognito lets you register multiple "clients" (think: separate apps) against the same User Pool. `dev-ui` and `dev-admin` each get their own, so you can see/revoke their access independently later if needed. |
+| **DynamoDB table (on-demand)** | Stores each user's submitted items, partitioned by their Cognito `sub` so one user's data is naturally isolated from another's — no fixed/hourly cost, bills purely per request. |
+| **Backend task role** | A separate IAM role (distinct from the execution role) that grants the *application code* permission to call DynamoDB — see Step 3 for why these two roles are different things. |
 
 ---
 
@@ -82,6 +88,10 @@ someone building this on AWS for the first time.
 **JWT (JSON Web Token) / Access Token** — what the user gets after signing in: a signed, tamper-proof blob containing who they are and what groups they're in. The backend verifies its signature using Cognito's public keys (JWKS) rather than trusting it blindly.
 
 **JWKS (JSON Web Key Set)** — the public keys Cognito publishes at a well-known URL, used to verify that a JWT was really signed by Cognito and hasn't been tampered with.
+
+**DynamoDB** — AWS's managed NoSQL database. No servers to provision, no schema migrations — you define a table's key structure once (here: partition key `user_sub`, sort key `item_id`) and it scales automatically. **On-demand billing mode** (used here) charges purely per request, with no capacity planning and no fixed fee — the simplest mode to reason about for a short test, though provisioned-capacity mode can be cheaper at steady, predictable, high-volume traffic.
+
+**Partition key / Sort key** — DynamoDB's two-part primary key. Items sharing the same partition key (here, all of one user's items) are stored together and can be fetched efficiently with a `Query` — much cheaper and faster than scanning the whole table, which is why `backend/db.py`'s `list_items` uses `Query` but its admin-only `count_all_items` (a full-table count across every user) uses the pricier `Scan` instead, deliberately, since that one genuinely needs to see every item.
 
 **AWS Amplify Hosting** — a static-site/web-app hosting service with built-in CI/CD: point it at a GitHub repo (and a subdirectory, for a monorepo like this one), and it rebuilds and redeploys automatically on every push, with free automatic HTTPS. This is doing for the frontends what Cloud Build did automatically for Cloud Run in the earlier GCP project — except here it's Amplify's own built-in system, not something you wire up separately.
 
@@ -101,13 +111,14 @@ someone building this on AWS for the first time.
 
 ## 4. Cost summary
 
-Full breakdown in `cost.txt`. Short version: **~$0.10–$0.15 for a 3-hour test**, almost entirely the ALB's hourly charge — Amplify Hosting and Cognito both round to $0.00 at this scale, and there's only one Fargate task (the backend) since both frontends run on Amplify instead.
+Full breakdown in `cost.txt`. Short version: **~$0.10–$0.15 for a 3-hour test**, almost entirely the ALB's hourly charge — Amplify Hosting, Cognito, and DynamoDB (on-demand mode) all round to $0.00 at this scale, and there's only one Fargate task (the backend) since both frontends run on Amplify instead.
 
 ---
 
 ## 5. Where things stand already
 
-- All code (both frontends + backend) is written, and **tested locally end-to-end** against `cognito-local` (a real Cognito emulator) — the full auth/authorization matrix was verified with curl before anything was pushed: public access works, missing/invalid tokens are rejected, a regular user can call `/api/me` but gets `403` on `/api/admin/stats`, and an admin user succeeds on both. Both frontend builds were confirmed to each bake in only their own Cognito App Client ID.
+- All code (both frontends + backend) is written, and **tested locally end-to-end** against `cognito-local` (a real Cognito emulator) and AWS's own official `amazon/dynamodb-local` image — the full auth/authorization matrix was verified with curl before anything was pushed: public access works, missing/invalid tokens are rejected, a regular user can call `/api/me` but gets `403` on `/api/admin/stats`, and an admin user succeeds on both. Both frontend builds were confirmed to each bake in only their own Cognito App Client ID.
+- **DynamoDB integration also tested end-to-end**: a user's created items are only visible to that same user (`GET /api/items` correctly isolates by `user_sub`), while the admin stats endpoint correctly counts items across *all* users via a full-table scan — confirmed with real data from two different test accounts before anything was pushed.
 - Pushed to GitHub already, including the backend's GitHub Actions workflow and both frontends' `amplify.yml` build specs.
 - **Nothing exists on AWS yet** — this guide starts from zero, and per your explicit instruction, nothing will be created on AWS except by you, following these steps yourself.
 
@@ -151,12 +162,29 @@ Full breakdown in `cost.txt`. Short version: **~$0.10–$0.15 for a 3-hour test*
 
 ---
 
-## 8. Step 3 — Create the ECR repository and IAM execution role
+## 8. Step 3 — Create the ECR repository, DynamoDB table, and IAM roles
 
 1. ECR → **Create repository** → name: `aws-advance-arch-backend`. Create.
 2. IAM → **Roles** → **Create role** → AWS service → Elastic Container Service → **Elastic Container Service Task** → attach `AmazonECSTaskExecutionRolePolicy` → name it exactly `ecsTaskExecutionRole` (matches the task definition template). Skip this if you already created this exact role for an earlier project — it's reusable across any ECS task in the account.
-
-This backend has no AWS service dependencies of its own (no S3, no database) beyond verifying JWTs over plain HTTPS to Cognito's public JWKS endpoint, so **no separate task role is needed this time** — just the execution role.
+3. **DynamoDB → Create table**:
+   - Table name: `aws-advance-arch-items`.
+   - Partition key: `user_sub` (String). Sort key: `item_id` (String) — matches `backend/db.py` exactly.
+   - Table settings: **Default settings** (this already means on-demand/"Pay-per-request" capacity mode — no capacity planning needed, and no fixed hourly charge either way).
+   - Create.
+4. **Create the backend's task role** (separate from the execution role in step 2 — this one is what the *application code* uses to call DynamoDB, not what ECS itself uses to pull the image/write logs):
+   - IAM → **Roles** → **Create role** → AWS service → Elastic Container Service → **Elastic Container Service Task**.
+   - Attach a policy granting DynamoDB access to just this table — **Create policy** → JSON:
+     ```json
+     {
+       "Version": "2012-10-17",
+       "Statement": [{
+         "Effect": "Allow",
+         "Action": ["dynamodb:PutItem", "dynamodb:Query", "dynamodb:Scan"],
+         "Resource": "arn:aws:dynamodb:<REGION>:<AWS_ACCOUNT_ID>:table/aws-advance-arch-items"
+       }]
+     }
+     ```
+   - Name the role exactly `aws-advance-arch-backend-task-role` (matches the task definition template).
 
 ---
 
@@ -237,6 +265,8 @@ Repeat Step 6, with these differences:
 | `/api/admin/stats` always 403, even for the admin test user | User not actually in the `Admins` group, or signed in via the wrong app client | Cognito console → Users → confirm group membership; confirm you're testing via dev-admin, not dev-ui |
 | ECS task won't reach healthy in the target group | Health check path wrong, or security group blocking ALB→task traffic | Confirm target group health check path is `/api/public`; confirm `aws-advance-arch-tasks-sg` allows inbound 8080 from `aws-advance-arch-alb-sg` |
 | GitHub Actions fails at ECR push | ECR repo not created yet, or IAM user lacks permission | Confirm Step 3 was completed and the secret values are correct |
+| `/api/items` returns 500, or logs show an AWS auth/permission error | Task role missing or not attached, or DynamoDB table name mismatch | Confirm the task definition's `taskRoleArn` is set and the role has the DynamoDB policy from Step 3; confirm `DYNAMODB_TABLE_NAME` matches the real table name exactly |
+| A user sees another user's items | Should never happen if `backend/db.py` is unmodified (it queries by `user_sub` from the verified JWT, not anything client-supplied) | If you've changed the code, double check the partition key is still derived from `claims["sub"]`, never from client input |
 
 ---
 
@@ -249,9 +279,10 @@ Repeat Step 6, with these differences:
 3. ECR → delete the `aws-advance-arch-backend` repository.
 4. Amplify → delete both the `dev-ui` and `dev-admin` apps (Console → app → App settings → General → Delete app).
 5. Cognito → delete the `aws-advance-arch-pool` User Pool (this also removes its app clients, groups, and users).
-6. VPC → delete `aws-advance-arch-vpc` (cleans up its subnets/route tables/internet gateway together).
-7. IAM → delete the `github-actions-deployer-advance` user and its access key, and the custom policy if you made one (keep `ecsTaskExecutionRole` — it's a standard, reusable, free role).
-8. Double-check: ECS shows no services, EC2 Load Balancers is empty, and Amplify shows no apps — those are the resources that mattered for cost/cleanliness.
+6. **DynamoDB → delete the `aws-advance-arch-items` table** (this permanently deletes all stored items too — expected and fine for a test).
+7. VPC → delete `aws-advance-arch-vpc` (cleans up its subnets/route tables/internet gateway together).
+8. IAM → delete the `github-actions-deployer-advance` user and its access key, the `aws-advance-arch-backend-task-role` and its custom DynamoDB policy, and the custom policy if you made one (keep `ecsTaskExecutionRole` — it's a standard, reusable, free role).
+9. Double-check: ECS shows no services, EC2 Load Balancers is empty, Amplify shows no apps, and DynamoDB shows no tables — those are the resources that mattered for cost/cleanliness.
 
 ---
 
@@ -265,3 +296,5 @@ Repeat Step 6, with these differences:
 6. The response travels back through the ALB → Amplify's edge → the browser, which only ever saw its own HTTPS domain throughout.
 
 `dev-admin` works identically, except its calls to `/api/admin/stats` additionally require the token's `cognito:groups` claim to include `Admins` — enforced entirely in the backend's own code (`require_admin` in `backend/main.py`), not by anything Cognito or the ALB does automatically.
+
+When a user calls `POST /api/items` or `GET /api/items`, the backend uses the verified token's `sub` claim (never anything the client sends directly) as the DynamoDB partition key — this is what makes one user's items structurally invisible to another user's queries, rather than relying on application logic alone to filter them out after the fact.

@@ -9,6 +9,7 @@ ARCHITECTURE:
   - backend (FastAPI)            -> ECS on Fargate, behind an ALB
   - User management/auth         -> AWS Cognito (1 User Pool, 2 App Clients,
                                      1 "Admins" Group)
+  - Data storage                 -> DynamoDB (1 table, on-demand billing)
 
 Note: this is cheaper than a design where the frontends also run on Fargate,
 since Amplify Hosting is pay-per-use with a generous free tier and there's
@@ -57,6 +58,20 @@ sourced from aws.amazon.com pricing pages, Oct 2026)
    Real rate: $0.10/GB-month storage. One small Python image for only a
    few hours, prorated against the monthly rate: effectively $0.00.
 
+7) DynamoDB - 1 table ("aws-advance-arch-items"), on-demand billing mode
+   Real rates: Write Request Units $0.625/million, Read Request Units
+   $0.125/million strongly-consistent (Standard table class, us-east-1).
+   Storage: $0.25/GB-month, with the first 25GB/Region free REGARDLESS of
+   billing mode. IMPORTANT: unlike provisioned mode's 25 WCU/25 RCU
+   always-free allowance, on-demand mode has NO free allowance for
+   requests themselves - every read/write is billed from the first one.
+   There is no fixed/hourly/minimum fee either way.
+   For a 3-hour test: a few dozen manual test writes/reads, each item
+   under 1KB, nowhere near the 25GB free storage tier.
+   Example: 100 writes + 100 reads = 100/1,000,000 x $0.625 +
+   100/1,000,000 x $0.125 = $0.0000625 + $0.0000125 = $0.00009
+   Subtotal: $0.00 (rounds to zero at this scale)
+
 ---------------------------------------------------------------------
 TOTAL ESTIMATED COST FOR A 3 HOUR TEST: approximately $0.10 - $0.15
 (Slightly cheaper than the earlier gcp-traditional-arch AWS test, because
@@ -70,8 +85,11 @@ IF YOU FORGET TO DELETE IT (left running a full 30-day month):
                                                                 (usage-based,
                                                                  no fixed fee)
   Cognito (well under 10,000 MAU for a test project):           $0.00/month
+  DynamoDB (on-demand, light real-world traffic):              ~$0-2/month
+                                                                (usage-based,
+                                                                 no fixed fee)
   Everything else (VPC, ECR):                                   ~$0-1/month
-  TOTAL IF LEFT RUNNING:                                       ~$26-31/month
+  TOTAL IF LEFT RUNNING:                                       ~$26-33/month
 As before: the ALB is the single biggest "forgot to delete it" risk since
 it bills by the hour regardless of traffic - delete that first if you ever
 leave this running longer than intended.
@@ -91,9 +109,10 @@ WHAT WE ARE DELIBERATELY SKIPPING TO KEEP THIS AT MINIMAL COST:
    to the HTTP backend, so mixed-content blocking never triggers. This is
    a standard, documented Amplify Hosting pattern, not a workaround - see
    the deployment guide for the exact rewrite rule.
- - No RDS, ElastiCache, or any other always-on billed-by-the-hour data
-   service - this project has no database; the backend's demo endpoints
-   use mock/in-memory data only.
+ - No RDS, ElastiCache, or other always-on billed-by-the-hour data service -
+   DynamoDB on-demand mode was chosen specifically because, like Cognito
+   and Amplify, it has no fixed/hourly charge at all - cost scales purely
+   with actual reads/writes, which stays at $0.00 for a short test.
  - No Cognito Identity Pool (only a User Pool) - Identity Pools are a
    separate, optional Cognito feature for granting temporary AWS
    credentials to authenticated users (e.g. direct S3 access from the

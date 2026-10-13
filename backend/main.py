@@ -13,6 +13,9 @@ import requests
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from jose import jwt
+from pydantic import BaseModel
+
+import db
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("backend")
@@ -102,10 +105,25 @@ def me(claims: dict = Depends(verify_token)):
     }
 
 
+class ItemBody(BaseModel):
+    text: str
+
+
+@app.post("/api/items")
+def create_item(body: ItemBody, claims: dict = Depends(verify_token)):
+    item = db.create_item(claims["sub"], body.text)
+    return {"ok": True, "item": item}
+
+
+@app.get("/api/items")
+def list_items(claims: dict = Depends(verify_token)):
+    return db.list_items(claims["sub"])
+
+
 @app.get("/api/admin/stats")
 def admin_stats(claims: dict = Depends(require_admin)):
     return {
         "ok": True,
         "message": f"Hello admin '{claims.get('username')}' - this endpoint required the '{ADMIN_GROUP_NAME}' group",
-        "fake_stats": {"total_users": 42, "active_sessions": 7},
+        "stats": {"total_items_in_dynamodb": db.count_all_items()},
     }

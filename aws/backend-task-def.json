@@ -5,6 +5,7 @@
   "cpu": "256",
   "memory": "512",
   "executionRoleArn": "arn:aws:iam::<AWS_ACCOUNT_ID>:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::<AWS_ACCOUNT_ID>:role/aws-advance-arch-backend-task-role",
   "containerDefinitions": [
     {
       "name": "backend",
@@ -17,7 +18,9 @@
         { "name": "COGNITO_ISSUER", "value": "https://cognito-idp.<REGION>.amazonaws.com/<USER_POOL_ID>" },
         { "name": "COGNITO_JWKS_URL", "value": "https://cognito-idp.<REGION>.amazonaws.com/<USER_POOL_ID>/.well-known/jwks.json" },
         { "name": "COGNITO_APP_CLIENT_IDS", "value": "<DEV_UI_APP_CLIENT_ID>,<DEV_ADMIN_APP_CLIENT_ID>" },
-        { "name": "ADMIN_GROUP_NAME", "value": "Admins" }
+        { "name": "ADMIN_GROUP_NAME", "value": "Admins" },
+        { "name": "DYNAMODB_TABLE_NAME", "value": "aws-advance-arch-items" },
+        { "name": "AWS_REGION", "value": "<REGION>" }
       ],
       "logConfiguration": {
         "logDriver": "awslogs",

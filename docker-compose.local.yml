@@ -2,9 +2,9 @@
 # Hosting serves the frontends directly from Git, ECS runs the backend).
 #
 # Usage - see README.md for the full step-by-step:
-#   1. docker compose -f docker-compose.local.yml up -d cognito-local
-#   2. python local-testing/seed_cognito_local.py   (prints the exact env
-#      values to use below)
+#   1. docker compose -f docker-compose.local.yml up -d cognito-local dynamodb-local
+#   2. python local-testing/seed_cognito_local.py       (prints the exact env values)
+#      python local-testing/create_dynamodb_table.py
 #   3. COGNITO_ISSUER=... COGNITO_JWKS_URL=... COGNITO_APP_CLIENT_IDS=... \
 #        docker compose -f docker-compose.local.yml up -d backend
 services:
@@ -15,6 +15,14 @@ services:
     ports:
       - "9229:9229"
 
+  dynamodb-local:
+    image: amazon/dynamodb-local
+    ports:
+      - "8500:8000"
+      # ^ host port 8500 here only because 8000 was already taken by
+      #   another local project on this machine - change to "8000:8000"
+      #   if yours is free (and update DYNAMODB_ENDPOINT_URL below to match)
+
   backend:
     build: ./backend
     ports:
@@ -24,7 +32,11 @@ services:
       - COGNITO_JWKS_URL=${COGNITO_JWKS_URL}
       - COGNITO_APP_CLIENT_IDS=${COGNITO_APP_CLIENT_IDS}
       - ADMIN_GROUP_NAME=Admins
+      - DYNAMODB_TABLE_NAME=aws-advance-arch-items
+      - DYNAMODB_ENDPOINT_URL=http://host.docker.internal:8500
+      - AWS_REGION=us-east-1
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
       - cognito-local
+      - dynamodb-local
