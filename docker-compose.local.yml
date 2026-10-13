@@ -1,0 +1,30 @@
+# Local testing only - production has no docker-compose at all (Amplify
+# Hosting serves the frontends directly from Git, ECS runs the backend).
+#
+# Usage - see README.md for the full step-by-step:
+#   1. docker compose -f docker-compose.local.yml up -d cognito-local
+#   2. python local-testing/seed_cognito_local.py   (prints the exact env
+#      values to use below)
+#   3. COGNITO_ISSUER=... COGNITO_JWKS_URL=... COGNITO_APP_CLIENT_IDS=... \
+#        docker compose -f docker-compose.local.yml up -d backend
+services:
+  cognito-local:
+    build:
+      context: ./local-testing
+      dockerfile: cognito-local.Dockerfile
+    ports:
+      - "9229:9229"
+
+  backend:
+    build: ./backend
+    ports:
+      - "8080:8080"
+    environment:
+      - COGNITO_ISSUER=${COGNITO_ISSUER}
+      - COGNITO_JWKS_URL=${COGNITO_JWKS_URL}
+      - COGNITO_APP_CLIENT_IDS=${COGNITO_APP_CLIENT_IDS}
+      - ADMIN_GROUP_NAME=Admins
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - cognito-local

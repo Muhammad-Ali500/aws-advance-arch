@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>dev-ui - AWS Advance Arch</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 2rem; background: #f7f9fc; color: #1f2937; }
+    h1 { color: #1a3a6b; }
+    .card { background: white; padding: 1.5rem; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); max-width: 480px; margin-bottom: 1rem; }
+    input { display: block; width: 100%; padding: 8px; margin: 6px 0 12px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+    button { padding: 8px 16px; background: #1a3a6b; color: white; border: none; border-radius: 4px; cursor: pointer; margin-right: 6px; }
+    button:hover { background: #142f57; }
+    pre { background: #f3f4f6; padding: 10px; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; }
+    .error { color: #b91c1c; }
+    .ok { color: #15803d; }
+    h2 { font-size: 1rem; margin-top: 0; }
+  </style>
+</head>
+<body>
+  <h1>dev-ui (end-user app)</h1>
+
+  <div class="card" id="signup-card">
+    <h2>1. Sign up</h2>
+    <input id="su-username" placeholder="username" />
+    <input id="su-email" placeholder="email" />
+    <input id="su-password" type="password" placeholder="password (min 8 chars)" />
+    <button id="su-btn">Sign up</button>
+    <pre id="su-result"></pre>
+  </div>
+
+  <div class="card" id="confirm-card">
+    <h2>2. Confirm sign up (verification code)</h2>
+    <input id="cf-username" placeholder="username" />
+    <input id="cf-code" placeholder="verification code" />
+    <button id="cf-btn">Confirm</button>
+    <pre id="cf-result"></pre>
+  </div>
+
+  <div class="card" id="signin-card">
+    <h2>3. Sign in</h2>
+    <input id="si-username" placeholder="username" />
+    <input id="si-password" type="password" placeholder="password" />
+    <button id="si-btn">Sign in</button>
+    <button id="so-btn">Sign out</button>
+    <pre id="si-result"></pre>
+  </div>
+
+  <div class="card" id="api-card">
+    <h2>4. Call backend (requires sign in)</h2>
+    <button id="public-btn">GET /api/public (no auth)</button>
+    <button id="me-btn">GET /api/me (requires auth)</button>
+    <pre id="api-result"></pre>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

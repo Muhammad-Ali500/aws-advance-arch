@@ -1,0 +1,33 @@
+{
+  "family": "aws-advance-arch-backend",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::<AWS_ACCOUNT_ID>:role/ecsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "backend",
+      "image": "<ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/aws-advance-arch-backend:placeholder",
+      "essential": true,
+      "portMappings": [
+        { "containerPort": 8080, "protocol": "tcp" }
+      ],
+      "environment": [
+        { "name": "COGNITO_ISSUER", "value": "https://cognito-idp.<REGION>.amazonaws.com/<USER_POOL_ID>" },
+        { "name": "COGNITO_JWKS_URL", "value": "https://cognito-idp.<REGION>.amazonaws.com/<USER_POOL_ID>/.well-known/jwks.json" },
+        { "name": "COGNITO_APP_CLIENT_IDS", "value": "<DEV_UI_APP_CLIENT_ID>,<DEV_ADMIN_APP_CLIENT_ID>" },
+        { "name": "ADMIN_GROUP_NAME", "value": "Admins" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/aws-advance-arch-backend",
+          "awslogs-region": "<REGION>",
+          "awslogs-stream-prefix": "ecs",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}

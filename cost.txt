@@ -1,0 +1,106 @@
+AWS Advance Architecture (test project) - Cost Breakdown
+==============================================================
+Goal: spin up for ~3 hours, test, then delete everything.
+Region assumed: us-east-1.
+
+ARCHITECTURE:
+  - dev-ui (end-user frontend)   -> AWS Amplify Hosting
+  - dev-admin (admin frontend)   -> AWS Amplify Hosting (separate app)
+  - backend (FastAPI)            -> ECS on Fargate, behind an ALB
+  - User management/auth         -> AWS Cognito (1 User Pool, 2 App Clients,
+                                     1 "Admins" Group)
+
+Note: this is cheaper than a design where the frontends also run on Fargate,
+since Amplify Hosting is pay-per-use with a generous free tier and there's
+only ONE Fargate task here (the backend), not three.
+
+RESOURCE-BY-RESOURCE (all rates are real, current AWS list prices,
+sourced from aws.amazon.com pricing pages, Oct 2026)
+---------------------------------------------------------------------
+1) AWS Amplify Hosting - 2 apps (dev-ui, dev-admin)
+   Real rates: build minutes $0.01/min (Standard build instance, first
+   1,000 min/month free) | storage $0.023/GB-month (first 5GB free) |
+   data transfer out $0.15/GB (first 15GB free). No per-app base fee -
+   pricing is purely usage-based, and Amplify has no fixed/hourly charge
+   at all (unlike the ALB below).
+   For a 3-hour test: 2 small static-site builds (~3 min each = 6 min
+   total), a few MB of storage, a handful of page loads.
+   Subtotal: $0.00 (comfortably inside every free-tier allowance)
+
+2) ECS Fargate - 1 task (backend only), smallest size: 0.25 vCPU / 0.5 GB,
+   running continuously for the test (Fargate has no scale-to-zero)
+   Real rates: $0.04048/vCPU-hour, $0.004445/GB-hour (Linux/x86, us-east-1)
+   For a 3-hour test:
+     vCPU: 0.25 vCPU x 3 hr = 0.75 vCPU-hr -> 0.75 x $0.04048 = $0.0304
+     Memory: 0.5 GB x 3 hr = 1.5 GB-hr -> 1.5 x $0.004445 = $0.0067
+   Subtotal: ~$0.037
+
+3) Application Load Balancer - in front of the backend only
+   Real rates: $0.0225/hour (base) + $0.008/LCU-hour
+   For a 3-hour test: $0.0225 x 3 = $0.0675 + negligible LCU (light testing)
+   Subtotal: ~$0.07
+
+4) AWS Cognito - 1 User Pool, 2 App Clients, 1 Group, a handful of test users
+   Real rates: NO fixed/hourly/minimum fee at all (AWS's own pricing page:
+   "no minimum fees and no upfront commitments"). Essentials tier (the
+   default): first 10,000 MAU/month free, permanently (not a 12-month
+   trial allowance) - a handful of test logins is nowhere close to that.
+   Creating the User Pool, App Clients, and Groups is free.
+   Subtotal: $0.00
+
+5) VPC + subnets + security groups (for the backend's ECS task)
+   Cost: $0.00 - FREE, same as the earlier GCP/AWS test projects. Fargate
+   task runs in a PUBLIC subnet with a public IP assigned directly - no
+   NAT Gateway needed (same cost-avoidance approach as before).
+
+6) ECR (backend's container image)
+   Real rate: $0.10/GB-month storage. One small Python image for only a
+   few hours, prorated against the monthly rate: effectively $0.00.
+
+---------------------------------------------------------------------
+TOTAL ESTIMATED COST FOR A 3 HOUR TEST: approximately $0.10 - $0.15
+(Slightly cheaper than the earlier gcp-traditional-arch AWS test, because
+only one Fargate task runs here - both frontends are on Amplify Hosting
+instead, which has no continuous per-hour charge the way Fargate does.)
+
+IF YOU FORGET TO DELETE IT (left running a full 30-day month):
+  Fargate (1 task, 0.25 vCPU / 0.5 GB, 730 hrs):              ~$9.01/month
+  ALB (base charge only, light/no traffic):                   ~$16.43/month
+  Amplify Hosting (2 apps, light real-world traffic):          ~$0-5/month
+                                                                (usage-based,
+                                                                 no fixed fee)
+  Cognito (well under 10,000 MAU for a test project):           $0.00/month
+  Everything else (VPC, ECR):                                   ~$0-1/month
+  TOTAL IF LEFT RUNNING:                                       ~$26-31/month
+As before: the ALB is the single biggest "forgot to delete it" risk since
+it bills by the hour regardless of traffic - delete that first if you ever
+leave this running longer than intended.
+
+WHAT WE ARE DELIBERATELY SKIPPING TO KEEP THIS AT MINIMAL COST:
+ - No NAT Gateway - the backend's Fargate task runs in a public subnet
+   with a public IP, same approach as the earlier AWS test project.
+ - No SSL certificate / HTTPS listener on the backend ALB - Amplify
+   Hosting DOES give both frontends free HTTPS automatically (built into
+   the service, no extra cost or step), which creates a real problem if
+   the frontends called the HTTP-only backend's ALB URL directly: browsers
+   block exactly that ("mixed content" - an HTTPS page calling plain HTTP).
+   The fix used here costs nothing extra and needs no custom domain/ACM
+   certificate: each Amplify app's "rewrites and redirects" feature proxies
+   `/api/*` requests to the backend ALB server-side, at Amplify's edge -
+   the browser only ever talks to the Amplify HTTPS domain, never directly
+   to the HTTP backend, so mixed-content blocking never triggers. This is
+   a standard, documented Amplify Hosting pattern, not a workaround - see
+   the deployment guide for the exact rewrite rule.
+ - No RDS, ElastiCache, or any other always-on billed-by-the-hour data
+   service - this project has no database; the backend's demo endpoints
+   use mock/in-memory data only.
+ - No Cognito Identity Pool (only a User Pool) - Identity Pools are a
+   separate, optional Cognito feature for granting temporary AWS
+   credentials to authenticated users (e.g. direct S3 access from the
+   browser) - not needed here since the browser only ever talks to our
+   own backend, never directly to other AWS services.
+ - No committed-use/Savings Plans (not relevant at this scale or duration)
+
+Prices are current real AWS list prices as of Oct 2026 and are AWS's own
+published rates, not a quote or guarantee - actual charges depend on
+exact usage and any pricing changes AWS makes.
