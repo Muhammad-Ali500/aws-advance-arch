@@ -2,36 +2,31 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>dev-admin - AWS Advance Arch</title>
-  <style>
-    body { font-family: Arial, sans-serif; margin: 2rem; background: #fff7ed; color: #1f2937; }
-    h1 { color: #9a3412; }
-    .card { background: white; padding: 1.5rem; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); max-width: 480px; margin-bottom: 1rem; }
-    input { display: block; width: 100%; padding: 8px; margin: 6px 0 12px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
-    button { padding: 8px 16px; background: #9a3412; color: white; border: none; border-radius: 4px; cursor: pointer; margin-right: 6px; }
-    button:hover { background: #7c2d12; }
-    pre { background: #f3f4f6; padding: 10px; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; }
-    h2 { font-size: 1rem; margin-top: 0; }
-  </style>
+  <title>dev-admin - Slotta dummy admin portal</title>
+  <!-- styles in a file, not inline: amplify.yml sends a strict CSP like the real admin UI -->
+  <link rel="stylesheet" href="/src/style.css" />
+  <link rel="icon" href="data:," />
 </head>
 <body>
-  <h1>dev-admin (admin panel)</h1>
-  <p>Admin accounts are provisioned ahead of time and added to the "Admins"
-     Cognito group - no self-service sign-up here, by design.</p>
+  <h1>dev-admin (static Vite site on Amplify)</h1>
 
   <div class="card">
     <h2>Sign in</h2>
-    <input id="si-username" placeholder="username" />
-    <input id="si-password" type="password" placeholder="password" />
-    <button id="si-btn">Sign in</button>
-    <button id="so-btn">Sign out</button>
-    <pre id="si-result"></pre>
+    <input id="email" placeholder="email" />
+    <input id="password" type="password" placeholder="password" />
+    <button id="login-btn">Sign in</button>
   </div>
 
   <div class="card">
-    <h2>Admin API call</h2>
-    <button id="stats-btn">GET /api/admin/stats</button>
-    <pre id="api-result"></pre>
+    <h2>Infra checks</h2>
+    <button data-path="/api/me">Cognito: /api/me</button>
+    <button data-path="/api/admin/stats">DynamoDB + groups: stats</button>
+    <button data-path="/api/admin/check/s3">S3</button>
+    <button data-path="/api/admin/check/sqs">SQS</button>
+    <button data-path="/api/admin/check/kms">KMS</button>
+    <button data-path="/api/admin/check/secrets">Secrets Manager</button>
+    <button data-path="/api/admin/check/egress">NAT egress</button>
+    <pre id="result"></pre>
   </div>
 
   <script type="module" src="/src/main.js"></script>

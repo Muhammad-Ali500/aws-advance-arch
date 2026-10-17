@@ -1,0 +1,17 @@
+{
+  "name": "dev-ui",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 5173",
+    "build": "vite build",
+    "preview": "vite preview --port 5173 --host"
+  },
+  "dependencies": {
+    "amazon-cognito-identity-js": "^6.3.12"
+  },
+  "devDependencies": {
+    "vite": "^5.4.8"
+  }
+}

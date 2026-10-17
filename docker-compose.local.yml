@@ -5,8 +5,12 @@
 #   1. docker compose -f docker-compose.local.yml up -d cognito-local dynamodb-local
 #   2. python local-testing/seed_cognito_local.py       (prints the exact env values)
 #      python local-testing/create_dynamodb_table.py
-#   3. COGNITO_ISSUER=... COGNITO_JWKS_URL=... COGNITO_APP_CLIENT_IDS=... \
-#        docker compose -f docker-compose.local.yml up -d backend
+#   3. set COGNITO_USER_POOL_ID / COGNITO_CLIENT_ID / COGNITO_ISSUER / COGNITO_JWKS_URL
+#      in your shell from step 2's output, then:
+#      docker compose -f docker-compose.local.yml up -d --build backend
+#
+# S3 / SQS / KMS / Hosted UI are not emulated locally: those endpoints answer
+# 503 "not_configured" here. local-testing/test_backend_moto.py covers them offline.
 services:
   cognito-local:
     build:
@@ -21,20 +25,25 @@ services:
       - "8500:8000"
       # ^ host port 8500 here only because 8000 was already taken by
       #   another local project on this machine - change to "8000:8000"
-      #   if yours is free (and update DYNAMODB_ENDPOINT_URL below to match)
+      #   if yours is free (and update create_dynamodb_table.py to match)
 
   backend:
     build: ./backend
     ports:
-      - "8080:8080"
+      - "3000:3000"
     environment:
+      - AWS_REGION=us-east-1
+      # Local only: read secrets from env instead of Secrets Manager. NEVER on ECS.
+      - LOCAL_SECRETS=true
+      - APP_SECRET_JSON={"api_key":"local-dev"}
+      - COGNITO_USER_POOL_ID=${COGNITO_USER_POOL_ID}
+      - COGNITO_CLIENT_ID=${COGNITO_CLIENT_ID}
       - COGNITO_ISSUER=${COGNITO_ISSUER}
       - COGNITO_JWKS_URL=${COGNITO_JWKS_URL}
-      - COGNITO_APP_CLIENT_IDS=${COGNITO_APP_CLIENT_IDS}
-      - ADMIN_GROUP_NAME=Admins
+      - COGNITO_ENDPOINT_URL=http://host.docker.internal:9229
       - DYNAMODB_TABLE_NAME=aws-advance-arch-items
       - DYNAMODB_ENDPOINT_URL=http://host.docker.internal:8500
-      - AWS_REGION=us-east-1
+      - ALLOWED_ORIGINS=http://localhost:5173,http://localhost:5174,http://localhost:3001
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

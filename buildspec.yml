@@ -1,0 +1,49 @@
+version: 0.2
+
+# CodeBuild spec for the backend - same shape as the real slotta-be/buildspec.yml
+# (CodePipeline: GitHub source -> this build -> ECS deploy), but with NOTHING
+# hardcoded: account, repo and container name come from the CodeBuild
+# project's environment variables. This is the fix the real buildspec needs
+# for staging (it hardcodes the dev account 407578794254 and slotta-be-dev).
+#
+# Required CodeBuild environment variables:
+#   AWS_ACCOUNT_ID   e.g. 123456789012
+#   ECR_REPO         e.g. aws-advance-arch-backend
+#   CONTAINER_NAME   must equal the container name in the task definition (backend)
+# CodeBuild project must have "Privileged" enabled (docker build).
+
+phases:
+  pre_build:
+    commands:
+      - echo "=== Pre-build ==="
+      - export REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
+      - export REPOSITORY_URI="${REGISTRY}/${ECR_REPO}"
+      - export COMMIT_HASH=$(echo "$CODEBUILD_RESOLVED_SOURCE_VERSION" | cut -c 1-7)
+      - export RELEASE_VERSION="v${CODEBUILD_BUILD_NUMBER}"
+      - aws ecr get-login-password --region "$AWS_DEFAULT_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+
+  build:
+    commands:
+      - echo "=== Build, tag, and push ${REPOSITORY_URI}:${RELEASE_VERSION} ==="
+      - cd "$CODEBUILD_SRC_DIR/backend"
+      - docker build -t "$REPOSITORY_URI:$RELEASE_VERSION" .
+      - docker tag "$REPOSITORY_URI:$RELEASE_VERSION" "$REPOSITORY_URI:$COMMIT_HASH"
+      - docker tag "$REPOSITORY_URI:$RELEASE_VERSION" "$REPOSITORY_URI:latest"
+      - docker push "$REPOSITORY_URI:$RELEASE_VERSION"
+      - docker push "$REPOSITORY_URI:$COMMIT_HASH"
+      - docker push "$REPOSITORY_URI:latest"
+
+  post_build:
+    commands:
+      - |
+        if [ "${CODEBUILD_BUILD_SUCCEEDING:-0}" != "1" ]; then
+          echo "Build failed - not writing imagedefinitions.json"
+          exit 1
+        fi
+      - cd "$CODEBUILD_SRC_DIR"
+      - printf '[{"name":"%s","imageUri":"%s"}]\n' "$CONTAINER_NAME" "$REPOSITORY_URI:$RELEASE_VERSION" > imagedefinitions.json
+      - cat imagedefinitions.json
+
+artifacts:
+  files:
+    - imagedefinitions.json

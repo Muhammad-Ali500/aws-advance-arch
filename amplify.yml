@@ -1,0 +1,76 @@
+# Amplify build spec for THIS MONOREPO. When you connect the repo in the
+# Amplify console and tick "My app is a monorepo", Amplify reads this root
+# file and picks the entry whose appRoot matches the app you created
+# (it also sets AMPLIFY_MONOREPO_APP_ROOT for you).
+#
+# The real Slotta repos are separate repos, each with its own amplify.yml at
+# the root - dev-admin/amplify.yml and dev-ui/amplify.yml are those
+# equivalents, kept identical to the entries below.
+version: 1
+applications:
+  - appRoot: dev-admin
+    frontend:
+      phases:
+        preBuild:
+          commands:
+            - npm ci
+        build:
+          commands:
+            - npm run build
+      artifacts:
+        baseDirectory: dist
+        files:
+          - '**/*'
+      cache:
+        paths:
+          - node_modules/**/*
+      # Same strict CSP as the real slotta-admin-ui/amplify.yml. If you call
+      # the API on your own domain (VITE_API_BASE_URL), add that origin to
+      # connect-src, e.g. https://api.your-domain.com
+    customHeaders:
+      - pattern: '**/*'
+        headers:
+          - key: 'Content-Security-Policy'
+            value: >-
+              default-src 'self';
+              script-src 'self';
+              style-src 'self';
+              img-src 'self' data: blob: https://*.amazonaws.com;
+              font-src 'self';
+              connect-src 'self' https://*.amazonaws.com;
+              object-src 'none';
+              base-uri 'self';
+              form-action 'self';
+              frame-ancestors 'none';
+          - key: 'X-Frame-Options'
+            value: 'DENY'
+          - key: 'X-Content-Type-Options'
+            value: 'nosniff'
+          - key: 'Referrer-Policy'
+            value: 'strict-origin-when-cross-origin'
+
+  - appRoot: dev-ui
+    frontend:
+      phases:
+        preBuild:
+          commands:
+            - nvm use 20 || true
+            - npm ci
+        build:
+          commands:
+            - npm run build
+      artifacts:
+        baseDirectory: .next
+        files:
+          - '**/*'
+      cache:
+        paths:
+          - node_modules/**/*
+          - .next/cache/**/*
+    customHeaders:
+      - pattern: '**/*'
+        headers:
+          - key: 'X-Frame-Options'
+            value: 'SAMEORIGIN'
+          - key: 'X-Content-Type-Options'
+            value: 'nosniff'

@@ -1,0 +1,46 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DynamoDBItemsTable",
+      "Effect": "Allow",
+      "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:UpdateItem", "dynamodb:DeleteItem"],
+      "Resource": [
+        "arn:aws:dynamodb:us-east-1:<AWS_ACCOUNT_ID>:table/aws-advance-arch-items",
+        "arn:aws:dynamodb:us-east-1:<AWS_ACCOUNT_ID>:table/aws-advance-arch-items/index/*"
+      ]
+    },
+    {
+      "Sid": "CognitoBackendLogin",
+      "Effect": "Allow",
+      "Action": [
+        "cognito-idp:AdminInitiateAuth"
+      ],
+      "Resource": "arn:aws:cognito-idp:us-east-1:<AWS_ACCOUNT_ID>:userpool/<USER_POOL_ID>"
+    },
+    {
+      "Sid": "AppSecret",
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:us-east-1:<AWS_ACCOUNT_ID>:secret:slotta-dummy/*"
+    },
+    {
+      "Sid": "LogoBucketObjects",
+      "Effect": "Allow",
+      "Action": ["s3:PutObject", "s3:GetObject"],
+      "Resource": "arn:aws:s3:::<LOGO_BUCKET_NAME>/logos/*"
+    },
+    {
+      "Sid": "WaitlistQueue",
+      "Effect": "Allow",
+      "Action": "sqs:SendMessage",
+      "Resource": "arn:aws:sqs:us-east-1:<AWS_ACCOUNT_ID>:waitlist-events"
+    },
+    {
+      "Sid": "TokenKmsKey",
+      "Effect": "Allow",
+      "Action": ["kms:Encrypt", "kms:Decrypt"],
+      "Resource": "<KMS_KEY_ARN>"
+    }
+  ]
+}

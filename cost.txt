@@ -1,125 +1,53 @@
-AWS Advance Architecture (test project) - Cost Breakdown
-==============================================================
-Goal: spin up for ~3 hours, test, then delete everything.
-Region assumed: us-east-1.
+aws-advance-arch (Slotta practice) - Cost for ONE 3-hour deploy -> test -> destroy run
+=====================================================================================
+Region: us-east-1. On-demand list prices (Oct 2026). Track A = no custom domain.
+The deployment guide creates the FREE resources first and the HOURLY ones
+(NAT Gateway, ALB) last, so the paid clock only runs ~2 hours. The numbers
+below assume a full 3 hours anyway (worst case).
 
-ARCHITECTURE:
-  - dev-ui (end-user frontend)   -> AWS Amplify Hosting
-  - dev-admin (admin frontend)   -> AWS Amplify Hosting (separate app)
-  - backend (FastAPI)            -> ECS on Fargate, behind an ALB
-  - User management/auth         -> AWS Cognito (1 User Pool, 2 App Clients,
-                                     1 "Admins" Group)
-  - Data storage                 -> DynamoDB (1 table, on-demand billing)
-
-Note: this is cheaper than a design where the frontends also run on Fargate,
-since Amplify Hosting is pay-per-use with a generous free tier and there's
-only ONE Fargate task here (the backend), not three.
-
-RESOURCE-BY-RESOURCE (all rates are real, current AWS list prices,
-sourced from aws.amazon.com pricing pages, Oct 2026)
+HOURLY-BILLED (the ones that matter - delete these first at teardown)
 ---------------------------------------------------------------------
-1) AWS Amplify Hosting - 2 apps (dev-ui, dev-admin)
-   Real rates: build minutes $0.01/min (Standard build instance, first
-   1,000 min/month free) | storage $0.023/GB-month (first 5GB free) |
-   data transfer out $0.15/GB (first 15GB free). No per-app base fee -
-   pricing is purely usage-based, and Amplify has no fixed/hourly charge
-   at all (unlike the ALB below).
-   For a 3-hour test: 2 small static-site builds (~3 min each = 6 min
-   total), a few MB of storage, a handful of page loads.
-   Subtotal: $0.00 (comfortably inside every free-tier allowance)
+NAT Gateway        $0.045/h x 3 h                                  $0.14
+  + data processed $0.045/GB x ~0.5 GB (image pulls, JWKS, egress) $0.02
+  + its public IPv4 (Elastic IP) $0.005/h x 3 h                    $0.02
+ALB                $0.0225/h x 3 h                                 $0.07
+  + LCUs (light testing) ~$0.008/h x 3 h                           $0.02
+  + 2 public IPv4 addresses (one per AZ) $0.005/h x 2 x 3 h        $0.03
+ECS Fargate        0.25 vCPU + 0.5 GB, 1 task, 3 h                 $0.04
+  ($0.04048/vCPU-h, $0.004445/GB-h; private subnet = no public IP charge)
+                                                       Subtotal   ~$0.34
 
-2) ECS Fargate - 1 task (backend only), smallest size: 0.25 vCPU / 0.5 GB,
-   running continuously for the test (Fargate has no scale-to-zero)
-   Real rates: $0.04048/vCPU-hour, $0.004445/GB-hour (Linux/x86, us-east-1)
-   For a 3-hour test:
-     vCPU: 0.25 vCPU x 3 hr = 0.75 vCPU-hr -> 0.75 x $0.04048 = $0.0304
-     Memory: 0.5 GB x 3 hr = 1.5 GB-hr -> 1.5 x $0.004445 = $0.0067
-   Subtotal: ~$0.037
+USAGE-BASED (cents or zero at this scale)
+-----------------------------------------
+Amplify Hosting    ~4 builds x ~4 min x $0.01/min (if outside free build minutes)  $0.00-0.16
+                   SSR compute + requests + storage for a few page loads           ~$0.00
+CodeBuild          general1.small $0.005/min x ~3 builds x 3 min   $0.05 (100 free min/month may cover it)
+CodePipeline V2    $0.002/action-minute, ~10 min                   $0.02 (100 free min/month may cover it)
+ECR                ~0.2 GB image, a few hours of storage           <$0.01
+CloudWatch         logs + Container Insights for 3 h               ~$0.02
+DynamoDB           on-demand, a handful of reads/writes            ~$0.00
+Cognito            Essentials tier, first 10,000 MAU free          $0.00
+SQS / S3           a few requests                                   ~$0.00
+                                                       Subtotal   ~$0.09-0.25
 
-3) Application Load Balancer - in front of the backend only
-   Real rates: $0.0225/hour (base) + $0.008/LCU-hour
-   For a 3-hour test: $0.0225 x 3 = $0.0675 + negligible LCU (light testing)
-   Subtotal: ~$0.07
+PRORATED MONTHLY FEES (billed only for the hours they exist)
+------------------------------------------------------------
+KMS key            $1/month -> ~3 h                                ~$0.01  (no charge while pending deletion)
+Secrets Manager    $0.40/secret/month -> ~3 h                      ~$0.01
+                                                       Subtotal   ~$0.02
 
-4) AWS Cognito - 1 User Pool, 2 App Clients, 1 Group, a handful of test users
-   Real rates: NO fixed/hourly/minimum fee at all (AWS's own pricing page:
-   "no minimum fees and no upfront commitments"). Essentials tier (the
-   default): first 10,000 MAU/month free, permanently (not a 12-month
-   trial allowance) - a handful of test logins is nowhere close to that.
-   Creating the User Pool, App Clients, and Groups is free.
-   Subtotal: $0.00
+TOTAL, Track A (3 hours, worst case) ................  ~$0.45 - $0.65
+  Budget alert at $5 so a forgotten resource can't surprise you.
 
-5) VPC + subnets + security groups (for the backend's ECS task)
-   Cost: $0.00 - FREE, same as the earlier GCP/AWS test projects. Fargate
-   task runs in a PUBLIC subnet with a public IP assigned directly - no
-   NAT Gateway needed (same cost-avoidance approach as before).
+TRACK B EXTRAS (custom domain + HTTPS, the real Slotta shape)
+-------------------------------------------------------------
+Route 53 hosted zone  $0.50/month, but a zone DELETED WITHIN 12 HOURS of creation is not charged -> $0.00
+DNS queries           ~$0.00
+ACM certificate       free
+Domain registration   only if you don't already own one: ~$13-15/year (.com) - NOT refundable
+WAF (optional)        $5/web ACL/month + $1/rule/month, prorated -> ~$0.03 for 3 h
 
-6) ECR (backend's container image)
-   Real rate: $0.10/GB-month storage. One small Python image for only a
-   few hours, prorated against the monthly rate: effectively $0.00.
-
-7) DynamoDB - 1 table ("aws-advance-arch-items"), on-demand billing mode
-   Real rates: Write Request Units $0.625/million, Read Request Units
-   $0.125/million strongly-consistent (Standard table class, us-east-1).
-   Storage: $0.25/GB-month, with the first 25GB/Region free REGARDLESS of
-   billing mode. IMPORTANT: unlike provisioned mode's 25 WCU/25 RCU
-   always-free allowance, on-demand mode has NO free allowance for
-   requests themselves - every read/write is billed from the first one.
-   There is no fixed/hourly/minimum fee either way.
-   For a 3-hour test: a few dozen manual test writes/reads, each item
-   under 1KB, nowhere near the 25GB free storage tier.
-   Example: 100 writes + 100 reads = 100/1,000,000 x $0.625 +
-   100/1,000,000 x $0.125 = $0.0000625 + $0.0000125 = $0.00009
-   Subtotal: $0.00 (rounds to zero at this scale)
-
----------------------------------------------------------------------
-TOTAL ESTIMATED COST FOR A 3 HOUR TEST: approximately $0.10 - $0.15
-(Slightly cheaper than the earlier gcp-traditional-arch AWS test, because
-only one Fargate task runs here - both frontends are on Amplify Hosting
-instead, which has no continuous per-hour charge the way Fargate does.)
-
-IF YOU FORGET TO DELETE IT (left running a full 30-day month):
-  Fargate (1 task, 0.25 vCPU / 0.5 GB, 730 hrs):              ~$9.01/month
-  ALB (base charge only, light/no traffic):                   ~$16.43/month
-  Amplify Hosting (2 apps, light real-world traffic):          ~$0-5/month
-                                                                (usage-based,
-                                                                 no fixed fee)
-  Cognito (well under 10,000 MAU for a test project):           $0.00/month
-  DynamoDB (on-demand, light real-world traffic):              ~$0-2/month
-                                                                (usage-based,
-                                                                 no fixed fee)
-  Everything else (VPC, ECR):                                   ~$0-1/month
-  TOTAL IF LEFT RUNNING:                                       ~$26-33/month
-As before: the ALB is the single biggest "forgot to delete it" risk since
-it bills by the hour regardless of traffic - delete that first if you ever
-leave this running longer than intended.
-
-WHAT WE ARE DELIBERATELY SKIPPING TO KEEP THIS AT MINIMAL COST:
- - No NAT Gateway - the backend's Fargate task runs in a public subnet
-   with a public IP, same approach as the earlier AWS test project.
- - No SSL certificate / HTTPS listener on the backend ALB - Amplify
-   Hosting DOES give both frontends free HTTPS automatically (built into
-   the service, no extra cost or step), which creates a real problem if
-   the frontends called the HTTP-only backend's ALB URL directly: browsers
-   block exactly that ("mixed content" - an HTTPS page calling plain HTTP).
-   The fix used here costs nothing extra and needs no custom domain/ACM
-   certificate: each Amplify app's "rewrites and redirects" feature proxies
-   `/api/*` requests to the backend ALB server-side, at Amplify's edge -
-   the browser only ever talks to the Amplify HTTPS domain, never directly
-   to the HTTP backend, so mixed-content blocking never triggers. This is
-   a standard, documented Amplify Hosting pattern, not a workaround - see
-   the deployment guide for the exact rewrite rule.
- - No RDS, ElastiCache, or other always-on billed-by-the-hour data service -
-   DynamoDB on-demand mode was chosen specifically because, like Cognito
-   and Amplify, it has no fixed/hourly charge at all - cost scales purely
-   with actual reads/writes, which stays at $0.00 for a short test.
- - No Cognito Identity Pool (only a User Pool) - Identity Pools are a
-   separate, optional Cognito feature for granting temporary AWS
-   credentials to authenticated users (e.g. direct S3 access from the
-   browser) - not needed here since the browser only ever talks to our
-   own backend, never directly to other AWS services.
- - No committed-use/Savings Plans (not relevant at this scale or duration)
-
-Prices are current real AWS list prices as of Oct 2026 and are AWS's own
-published rates, not a quote or guarantee - actual charges depend on
-exact usage and any pricing changes AWS makes.
+IF YOU FORGET TO TEAR DOWN (per day)
+-------------------------------------
+NAT Gateway ~$1.20 + ALB ~$0.80 (incl. IPv4) + Fargate ~$0.30 + leftover Elastic IP $0.12
+=> about $2.40/day, ~$75/month. Delete the NAT Gateway, its Elastic IP and the ALB first.

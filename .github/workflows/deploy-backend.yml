@@ -1,12 +1,18 @@
-name: Deploy backend to ECS
+name: Deploy backend to ECS (alternative to CodePipeline)
+
+# The PRIMARY deploy path (same as the real Slotta staging plan) is
+# CodePipeline + CodeBuild using /buildspec.yml. This workflow is kept as an
+# alternative and is MANUAL ONLY, so the two never deploy at the same time.
+#
+# Auth uses GitHub OIDC -> an IAM role (same as the real slotta-be workflows),
+# not long-lived IAM user access keys. Set repo secret AWS_DEPLOY_ROLE_ARN.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "backend/**"
-      - "aws/backend-task-def.json"
-      - ".github/workflows/deploy-backend.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
 
 env:
   AWS_REGION: us-east-1
@@ -22,11 +28,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Log in to Amazon ECR

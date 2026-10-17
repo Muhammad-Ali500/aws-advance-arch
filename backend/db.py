@@ -4,34 +4,23 @@ key item_id, so each user's items are naturally isolated and efficiently
 queryable without a scan.
 
 DYNAMODB_ENDPOINT_URL is only set for local testing against DynamoDB Local;
-left unset in production so boto3 talks to the real regional AWS endpoint -
-same code either way, same pattern as storage.py in the gcp-traditional-arch
-project's AWS port.
+left unset on ECS so boto3 talks to the real regional endpoint with the
+task role's credentials (see aws_clients.py).
 """
 import datetime
 import logging
 import os
 import uuid
 
-import boto3
+from boto3.dynamodb.conditions import Key
+
+import aws_clients
 
 logger = logging.getLogger("backend.db")
 
 TABLE_NAME = os.environ.get("DYNAMODB_TABLE_NAME", "aws-advance-arch-items")
-ENDPOINT_URL = os.environ.get("DYNAMODB_ENDPOINT_URL") or None
-REGION = os.environ.get("AWS_REGION", "us-east-1")
 
-_resource = boto3.resource(
-    "dynamodb",
-    region_name=REGION,
-    endpoint_url=ENDPOINT_URL,
-    # DynamoDB Local doesn't check these, but boto3 requires *something* to
-    # be set - real AWS deployments get real credentials from the ECS task
-    # role instead, which take precedence whenever they're actually present.
-    aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID", "local"),
-    aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY", "local"),
-)
-_table = _resource.Table(TABLE_NAME)
+_table = aws_clients.resource("dynamodb").Table(TABLE_NAME)
 
 
 def create_item(user_sub: str, text: str) -> dict:
@@ -39,16 +28,14 @@ def create_item(user_sub: str, text: str) -> dict:
         "user_sub": user_sub,
         "item_id": str(uuid.uuid4()),
         "text": text,
-        "created_at": datetime.datetime.utcnow().isoformat() + "Z",
+        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
     }
     _table.put_item(Item=item)
     return item
 
 
 def list_items(user_sub: str) -> list:
-    resp = _table.query(
-        KeyConditionExpression=boto3.dynamodb.conditions.Key("user_sub").eq(user_sub)
-    )
+    resp = _table.query(KeyConditionExpression=Key("user_sub").eq(user_sub))
     items = resp.get("Items", [])
     items.sort(key=lambda i: i.get("created_at", ""), reverse=True)
     return items

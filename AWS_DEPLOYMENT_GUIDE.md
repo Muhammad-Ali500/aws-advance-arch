@@ -1,300 +1,300 @@
-# aws-advance-arch — Complete AWS Deployment Guide
+# aws-advance-arch: Complete Click-by-Click Deployment (3-hour practice run)
 
-Two frontends on **Amplify Hosting**, a **FastAPI backend** on **ECS
-Fargate** behind an **Application Load Balancer**, and **AWS Cognito** for
-user management — explained concept-by-concept, click-by-click, for
-someone building this on AWS for the first time.
+Practice run for the real Slotta staging deployment. Same AWS services and settings, basic app.
+Everything is done **by you in the AWS console**. Nothing here is automated.
 
----
-
-## Table of contents
-
-1. [Architecture, and why each piece exists](#1-architecture-and-why-each-piece-exists)
-2. [Glossary — every AWS concept used here](#2-glossary--every-aws-concept-used-here)
-3. [Prerequisites](#3-prerequisites)
-4. [Cost summary](#4-cost-summary)
-5. [Where things stand already](#5-where-things-stand-already)
-6. [Step 1 — Create the Cognito User Pool](#6-step-1--create-the-cognito-user-pool)
-7. [Step 2 — Create the VPC, subnets, and security groups](#7-step-2--create-the-vpc-subnets-and-security-groups)
-8. [Step 3 — Create the ECR repository and IAM execution role](#8-step-3--create-the-ecr-repository-and-iam-execution-role)
-9. [Step 4 — Wire up GitHub Actions for the backend's CI/CD](#9-step-4--wire-up-github-actions-for-the-backends-cicd)
-10. [Step 5 — Create the ECS cluster, task definition, and service behind an ALB](#10-step-5--create-the-ecs-cluster-task-definition-and-service-behind-an-alb)
-11. [Step 6 — Deploy dev-ui to Amplify Hosting](#11-step-6--deploy-dev-ui-to-amplify-hosting)
-12. [Step 7 — Deploy dev-admin to Amplify Hosting](#12-step-7--deploy-dev-admin-to-amplify-hosting)
-13. [Step 8 — Test it end-to-end](#13-step-8--test-it-end-to-end)
-14. [Step 9 — Troubleshooting](#14-step-9--troubleshooting)
-15. [Step 10 — Teardown (delete everything)](#15-step-10--teardown-delete-everything)
-16. [Appendix: how a request flows through this system](#16-appendix-how-a-request-flows-through-this-system)
+- **Region:** `US East (N. Virginia) us-east-1`. Check the region selector (top right) before **every** step.
+- **Sign in:** IAM Identity Center access portal → your account → *AdministratorAccess*. Never the root user.
+- **Repo:** `https://github.com/Muhammad-Ali500/aws-advance-arch`. **Commit and push the latest local changes first**: AWS builds from GitHub, not from your PC.
+- **Cost:** ~$0.45–0.65 for 3 hours (details in `cost.txt`).
+- **Track A** (default in this guide): no domain, HTTP ALB, frontends proxy the API. **Track B** (optional boxes 🅱): your own domain + HTTPS, exactly like Slotta.
 
 ---
 
-## 1. Architecture, and why each piece exists
+## Time plan
 
-```
- Browser                              Browser
-    |                                    |
-    v                                    v
-+---------------+                 +---------------+
-|   dev-ui      |                 |  dev-admin    |      <- both HTTPS automatically,
-| (Amplify      |                 | (Amplify      |         AWS-managed certs, free
-|  Hosting)     |                 |  Hosting)     |
-+-------+-------+                 +-------+-------+
-        |  /api/* rewritten               |  /api/* rewritten
-        |  server-side to ----------------+  server-side to
-        v  the backend ALB                   the backend ALB
-+--------------------------------------------------+
-|     Application Load Balancer (HTTP, port 80)     |
-+----------------------+-----------------------------+
-                        v
-              +-------------------+
-              |  ECS Fargate task |
-              |  (FastAPI backend)|
-              +---------+---------+
-                        |
-                        |  verifies JWT signature + claims
-                        v
-              +-------------------+        +--------------------+
-              |   AWS Cognito     |         |     DynamoDB       |
-              |   User Pool       |         | aws-advance-arch-  |
-              | (+ Admins group)  |         |   items table      |
-              +-------------------+         +--------------------+
-```
+| Part | Steps | Time (first time) | Billing clock |
+|---|---|---|---|
+| **Part 1: free resources** | Budget, DynamoDB, S3, KMS, Secrets, SQS, Cognito, ECR, logs, IAM, GitHub connection, first image build | 45–60 min | ~$0 (do this the day before if you like) |
+| **Part 2: network + backend** | VPC + NAT, security groups, target group, ALB, ECS cluster/task/service | 30–40 min | **starts here** (NAT, ALB) |
+| **Part 3: frontends + pipeline** | 2 Amplify apps, CodePipeline | 25–35 min | running |
+| **Part 4: test** | checklist | 15–20 min | running |
+| **Part 5: teardown** | delete everything | 20–25 min | stops when NAT + ALB are gone |
+| **Total** | | **~2.5–3 h**; the paid window is about 1.5–2 h | |
 
-The backend calls both Cognito (to verify who's calling) and DynamoDB (to
-read/write that user's items) on every authenticated request.
+🅱 Track B adds 20–40 min (DNS delegation + certificate validation). Start Phase B1 at the very beginning so the certificate validates while you work.
 
-| Piece | Why it's here |
+Keep a notepad open: you'll copy about 12 values (marked 📋) between steps.
+
+---
+
+# PART 1: Free / near-free resources
+
+## 1. Budget alert (2 min)
+1. Top search bar → type **Billing** → **Billing and Cost Management**.
+2. Left menu **Budgets** → **Create budget**.
+3. **Use a template (simplified)** → **Monthly cost budget**.
+4. Budget name `practice-budget` · Amount `5` · Email: your email → **Create budget**.
+
+## 🅱 B1. Domain + certificate (Track B only; start now, it validates in the background)
+1. Search **Route 53** → **Hosted zones** → **Create hosted zone** → Domain name e.g. `practice.yourdomain.com` → **Public hosted zone** → **Create hosted zone**.
+2. Open the zone → copy the 4 **NS** values → at the place that hosts `yourdomain.com`, create an **NS** record named `practice` with those 4 values.
+3. Search **Certificate Manager** → **Request** → **Request a public certificate** → **Next**.
+4. Domain names: `practice.yourdomain.com` **and** `*.practice.yourdomain.com` → DNS validation → **Request**.
+5. Open the certificate → **Create records in Route 53** → **Create records**. Status turns **Issued** in 5–30 min. 📋 certificate ARN.
+
+## 2. DynamoDB table (2 min)
+1. Search **DynamoDB** → left **Tables** → **Create table**.
+2. Table name: `aws-advance-arch-items`
+3. Partition key: `user_sub` (String) · Sort key: `item_id` (String)
+4. Table settings: **Default settings** (on-demand capacity) → **Create table**. Wait for **Active**.
+
+## 3. S3 bucket (2 min)
+1. Search **S3** → **Create bucket**.
+2. Bucket type **General purpose** · Bucket name `aws-advance-arch-logo-<yourname>-<random digits>` (must be globally unique).
+3. Leave **Block all public access** ✔ ON and the other defaults → **Create bucket**. 📋 bucket name.
+
+## 4. KMS key (3 min)
+1. Search **Key Management Service** → **Customer managed keys** → **Create key**.
+2. Key type **Symmetric** · Key usage **Encrypt and decrypt** → **Next**.
+3. Alias `aws-advance-arch-tokens` → **Next**.
+4. Key administrators: tick your `AWSReservedSSO_AdministratorAccess_...` role → **Next**.
+5. Key users: tick nothing (the task role gets access through IAM) → **Next** → **Finish**.
+6. Open the key → 📋 **ARN**.
+
+## 5. Secrets Manager (2 min)
+1. Search **Secrets Manager** → **Store a new secret**.
+2. Secret type **Other type of secret** → tab **Plaintext** → replace everything with `{"api_key":"practice"}` → **Next**.
+3. Secret name: **`slotta-dummy/app`** (exactly) → **Next** → rotation off → **Next** → **Store**.
+
+## 6. SQS queues (3 min)
+1. Search **SQS** → **Create queue** → **Standard** → Name `waitlist-events-dlq` → **Create queue**.
+2. Back to **Queues** → **Create queue** → **Standard** → Name `waitlist-events`.
+3. Scroll to **Dead-letter queue** → **Enabled** → choose `waitlist-events-dlq` → Maximum receives `5` → **Create queue**.
+4. 📋 the **URL** of `waitlist-events` (e.g. `https://sqs.us-east-1.amazonaws.com/123456789012/waitlist-events`).
+
+## 7. Cognito (8 min), same settings as Slotta
+1. Search **Cognito** → **Create user pool**.
+2. **Define your application**: Application type **Single-page application (SPA)** · Name `aws-advance-arch-web`.
+3. **Configure options**: Options for sign-in identifiers: ✔ **Email** only · **Self-registration: off (unticked)** · Required attributes: email.
+4. Return URL: leave empty → **Create user directory**. On the next page click **Go to overview**.
+5. 📋 **User pool ID** (e.g. `us-east-1_AbC123`).
+6. Left menu **App clients** → click `aws-advance-arch-web` → 📋 **Client ID** → **Edit** (App client information):
+   - Authentication flows: ✔ `ALLOW_ADMIN_USER_PASSWORD_AUTH` ✔ `ALLOW_REFRESH_TOKEN_AUTH` ✔ `ALLOW_USER_SRP_AUTH` (untick others) → **Save changes**.
+7. Left menu **Groups** → **Create group** → `SUPER_ADMIN` → **Create group**. Repeat for `ADMIN`.
+8. Left menu **Users** → **Create user**:
+   - Invitation: **Don't send an invitation** · Email `admin@example.com` (or yours) · ✔ Mark email address as verified · Password: **Set a password** `TestPass123!` → **Create user**.
+   - Open the user → **Add user to group** → `ADMIN` → **Add**.
+   - Create a second user `user@example.com` the same way, with **no group**.
+9. **Make the passwords permanent.** Console-created users must change their password at first login, and the dummy login doesn't handle that step. Open **CloudShell** (the `>_` icon in the top bar), then run:
+   ```bash
+   POOL=us-east-1_AbC123   # your pool id
+   aws cognito-idp admin-set-user-password --user-pool-id $POOL --username admin@example.com --password 'TestPass123!' --permanent
+   aws cognito-idp admin-set-user-password --user-pool-id $POOL --username user@example.com  --password 'TestPass123!' --permanent
+   ```
+   Users list → both show **Confirmed**.
+
+## 8. ECR repository (2 min)
+1. Search **Elastic Container Registry** → **Private registry → Repositories** → **Create repository**.
+2. Name `aws-advance-arch-backend` · Image tag mutability **Mutable** → **Create**.
+3. 📋 the repository URI.
+
+## 9. CloudWatch log group (1 min)
+Search **CloudWatch** → **Logs → Log groups** → **Create log group** → `/ecs/aws-advance-arch-backend` → Retention **1 week** → **Create**.
+
+## 10. IAM roles (8 min)
+**Execution role** (lets ECS pull the image and write logs):
+1. Search **IAM** → **Roles** → **Create role** → Trusted entity **AWS service** → Service **Elastic Container Service** → Use case **Elastic Container Service Task** → **Next**.
+2. Search and tick `AmazonECSTaskExecutionRolePolicy` → **Next** → Role name `aws-advance-arch-ecs-execution-role` → **Create role**.
+
+**Task role** (what the app may do):
+1. **Create role** → same trusted entity / use case → **Next** → tick nothing → **Next** → name `aws-advance-arch-backend-task-role` → **Create role**.
+2. Open it → **Add permissions** → **Create inline policy** → **JSON** tab.
+3. Paste `aws/backend-task-role-policy.json` and replace `<AWS_ACCOUNT_ID>`, `<USER_POOL_ID>`, `<LOGO_BUCKET_NAME>`, `<KMS_KEY_ARN>` → **Next** → name `app-permissions` → **Create policy**.
+
+(Your account ID is the 12 digits in the top-right menu.)
+
+## 11. GitHub connection + first image build (10–12 min, no Docker needed on your PC)
+1. Search **CodePipeline** → left **Settings → Connections** → **Create connection** → **GitHub** → name `github` → **Connect to GitHub** → **Install a new app** → choose your account → allow the `aws-advance-arch` repo → **Connect**. Status = **Available**.
+2. Search **CodeBuild** → **Create project**:
+   - Project name `aws-advance-arch-backend-build`
+   - Source provider **GitHub** → **Custom source credential / GitHub App** using the `github` connection → Repository: `aws-advance-arch` → leave webhook unticked
+   - Environment: **Managed image** · Compute **EC2** · OS **Amazon Linux** · Runtime **Standard** · Image: latest · ✔ **Privileged** (needed for Docker builds) · Service role: **New service role**
+   - **Additional configuration → Environment variables**: `AWS_ACCOUNT_ID` = your 12 digits · `ECR_REPO` = `aws-advance-arch-backend` · `CONTAINER_NAME` = `backend`
+   - Buildspec: **Use a buildspec file** (it finds `buildspec.yml` in the repo root)
+   - Artifacts: **No artifacts** · Logs: CloudWatch ✔ → **Create build project**
+3. Give the build role ECR push rights: **IAM → Roles** → open `codebuild-aws-advance-arch-backend-build-service-role` → **Add permissions → Attach policies** → `AmazonEC2ContainerRegistryPowerUser` → **Add permissions**.
+4. Back in CodeBuild → the project → **Start build** → wait for **Succeeded** (~3 min).
+5. ECR → your repo → you should see tags `v1`, a commit hash, and **`latest`**.
+
+✅ **End of Part 1. Nothing so far bills by the hour.**
+
+---
+
+# PART 2: Network + backend (the billing clock starts here)
+
+## 12. VPC (5 min + ~3 min NAT provisioning)
+1. Search **VPC** → **Create VPC** → choose **VPC and more**.
+2. Name tag auto-generation: `aws-advance-arch` · IPv4 CIDR `10.0.0.0/16`.
+3. Number of AZs **2** · Public subnets **2** · Private subnets **2**.
+4. NAT gateways: **In 1 AZ** · VPC endpoints: **S3 Gateway**.
+5. DNS hostnames ✔ · DNS resolution ✔ → **Create VPC** → wait until every line is green → **View VPC**.
+6. Add the DynamoDB endpoint: left **Endpoints** → **Create endpoint** → Name `ddb` · **AWS services** → search `dynamodb` → select `com.amazonaws.us-east-1.dynamodb` (**Gateway**) → VPC `aws-advance-arch-vpc` → tick the two **private** route tables (names contain `rtb-private`) → **Create endpoint**.
+
+## 13. Security groups (4 min)
+VPC → **Security groups** → **Create security group**:
+1. Name `aws-advance-arch-alb-sg` · Description `alb` · VPC `aws-advance-arch-vpc` · **Inbound rules → Add rule**: Type **HTTP**, Source **Anywhere-IPv4** (🅱 add another rule: **HTTPS**, Anywhere-IPv4) → **Create security group**.
+2. **Create security group** → Name `aws-advance-arch-tasks-sg` · Description `tasks` · same VPC · Inbound: Type **Custom TCP**, Port **3000**, Source: **Custom** → pick `aws-advance-arch-alb-sg` from the list → **Create security group**.
+
+## 14. Target group (3 min)
+1. Search **EC2** → left **Load Balancing → Target Groups** → **Create target group**.
+2. Target type **IP addresses** · Name `aws-advance-arch-tg` · Protocol **HTTP** · Port **3000** · VPC `aws-advance-arch-vpc`.
+3. Health checks: path **`/health`** → expand **Advanced**: Healthy threshold 2 · Interval 15 → **Next**.
+4. Don't register any targets → **Create target group**.
+
+## 15. Load balancer (4 min + ~3 min provisioning)
+1. EC2 → **Load Balancers** → **Create load balancer** → **Application Load Balancer** → **Create**.
+2. Name `aws-advance-arch-alb` · **Internet-facing** · IPv4.
+3. Network mapping: VPC `aws-advance-arch-vpc` → tick both AZs → choose the **public** subnet in each.
+4. Security groups: remove `default`, select `aws-advance-arch-alb-sg`.
+5. Listeners: **HTTP : 80** → Default action **Forward to** `aws-advance-arch-tg`.
+   🅱 Track B: **Add listener** **HTTPS : 443** → forward to `aws-advance-arch-tg` → certificate from ACM. After creation, edit the HTTP:80 listener → **Redirect to URL** → HTTPS 443, 301.
+6. **Create load balancer**. 📋 **DNS name** (e.g. `aws-advance-arch-alb-123.us-east-1.elb.amazonaws.com`).
+7. Open the ALB → **Attributes** tab → **Edit** → **Connection idle timeout = 120** seconds → **Save changes**.
+8. 🅱 Route 53 → your zone → **Create record** → name `api` → type **A** → **Alias** ON → *Alias to Application and Classic Load Balancer* → us-east-1 → the ALB → **Create records**.
+
+## 16. ECS cluster (2 min)
+Search **Elastic Container Service** → **Clusters** → **Create cluster** → name `aws-advance-arch-cluster` → Infrastructure **AWS Fargate (serverless)** → Monitoring: **Container Insights** on → **Create**.
+
+## 17. Task definition (5 min)
+1. Open `aws/backend-task-def.json` on your PC and replace:
+
+| Placeholder | Value |
 |---|---|
-| **dev-ui / dev-admin (Amplify Hosting)** | Two separate static sites, each with its own Cognito App Client, deployed with zero server management and automatic HTTPS. |
-| **Amplify rewrite rule (`/api/*`)** | Lets each HTTPS frontend call the HTTP-only backend without the browser blocking it as "mixed content" — the proxying happens server-side at Amplify's edge, so the browser never touches the backend's HTTP URL directly. No custom domain or certificate needed for this. |
-| **ECS Fargate backend** | Runs the FastAPI container that verifies Cognito JWTs and serves the actual API. |
-| **Application Load Balancer** | One stable entry point for the backend; also what Amplify's rewrite rule targets. |
-| **Cognito User Pool** | Handles sign-up, sign-in, and issues the JWT access tokens both frontends use to call the backend. One pool, shared by both apps. |
-| **Cognito "Admins" group** | The authorization boundary — `dev-admin`'s API calls only succeed if the signed-in user is in this group; `dev-ui` users normally aren't. |
-| **Two App Clients** | Cognito lets you register multiple "clients" (think: separate apps) against the same User Pool. `dev-ui` and `dev-admin` each get their own, so you can see/revoke their access independently later if needed. |
-| **DynamoDB table (on-demand)** | Stores each user's submitted items, partitioned by their Cognito `sub` so one user's data is naturally isolated from another's — no fixed/hourly cost, bills purely per request. |
-| **Backend task role** | A separate IAM role (distinct from the execution role) that grants the *application code* permission to call DynamoDB — see Step 3 for why these two roles are different things. |
+| `<AWS_ACCOUNT_ID>` | your 12 digits (appears several times) |
+| `<USER_POOL_ID>` / `<APP_CLIENT_ID>` | from step 7 |
+| `ALLOWED_ORIGINS` value | Track A: `*` · 🅱 the Amplify/custom domains, comma-separated |
+| `<LOGO_BUCKET_NAME>` | step 3 |
+| SQS URL | step 6 |
+| `<KMS_KEY_ARN>` | step 4 |
+
+2. ECS → **Task definitions** → **Create new task definition** ▾ → **Create new task definition with JSON** → delete the sample → paste your filled JSON → **Create**.
+
+## 18. Service (5 min + 3–5 min to become healthy)
+1. ECS → **Clusters** → `aws-advance-arch-cluster` → **Services** tab → **Create**.
+2. **Compute configuration**: Compute options **Launch type** → **FARGATE** → Platform **LATEST**.
+3. **Deployment configuration**: Application type **Service** · Family `aws-advance-arch-backend` (latest revision) · Service name **`backend`** · Desired tasks **1**.
+   - Expand **Deployment options / failure detection**: ✔ **Use the Amazon ECS deployment circuit breaker** ✔ **Rollback on failures**.
+4. **Networking**: VPC `aws-advance-arch-vpc` · Subnets: **only the two private** ones (remove the public ones) · Security group: **Use an existing** → `aws-advance-arch-tasks-sg` (remove default) · **Public IP: OFF**.
+5. **Load balancing**: ✔ Use load balancing → **Application Load Balancer** → **Use an existing load balancer** `aws-advance-arch-alb` → Container to load balance `backend 3000:3000` → Listener **Use an existing listener** `80:HTTP` (🅱 `443:HTTPS`) → Target group **Use an existing target group** `aws-advance-arch-tg` → Health check grace period `90`.
+6. **Create**.
+7. Wait: **Services → backend → Tasks**: 1 **Running** · **EC2 → Target groups → aws-advance-arch-tg → Targets**: 1 **healthy**.
+8. Browser: `http://<ALB DNS name>/health` → `{"status":"ok"}` (🅱 `https://api.practice.yourdomain.com/health`).
+
+If the task keeps stopping: open the stopped task → **Logs** tab / *Stopped reason*. Usual causes: a wrong placeholder in the task definition, or a Secrets Manager / IAM denial (the app reads the secret at boot).
 
 ---
 
-## 2. Glossary — every AWS concept used here
+# PART 3: Frontends + pipeline
 
-**Cognito User Pool** — a managed user directory: sign-up, sign-in, password resets, email verification, and JWT issuance, all handled by AWS. You don't write any of that logic yourself.
+## 19. Amplify: Admin portal (`dev-admin`, static) (8–10 min)
+1. Search **Amplify** → **Create new app** → **GitHub** → **Next** → authorise Amplify → repository `aws-advance-arch` · branch `main` → ✔ **My app is a monorepo** → Monorepo root directory **`dev-admin`** → **Next**.
+2. App name `dev-admin`. Build settings: auto-detected from the root `amplify.yml` (frontend = `dist`).
+3. **Advanced settings → Environment variables**:
+   - Track A: add none.
+   - 🅱 `VITE_API_BASE_URL` = `https://api.practice.yourdomain.com` (and add that origin to `connect-src` in `amplify.yml` → commit → push).
+4. **Next** → **Save and deploy** → wait for Deploy ✔ (~3 min). 📋 the domain `https://main.xxxx.amplifyapp.com`.
+5. Track A only: left **Hosting → Rewrites and redirects** → **Manage redirects** → **Add rewrite** twice:
 
-**App Client** — a registered "application" allowed to authenticate against a User Pool. Each app client gets its own ID (not a secret, safe to embed in frontend code) and can have different allowed auth flows. One User Pool can have many app clients — here, one for `dev-ui`, one for `dev-admin`.
-
-**Cognito Group** — a named label you can put users into (e.g., "Admins"). Shows up as a `cognito:groups` claim inside the JWT access token. This project's backend checks for that claim to decide who can call admin-only endpoints — Cognito doesn't enforce this itself, your backend code does (which is exactly what `backend/main.py`'s `require_admin` function does).
-
-**JWT (JSON Web Token) / Access Token** — what the user gets after signing in: a signed, tamper-proof blob containing who they are and what groups they're in. The backend verifies its signature using Cognito's public keys (JWKS) rather than trusting it blindly.
-
-**JWKS (JSON Web Key Set)** — the public keys Cognito publishes at a well-known URL, used to verify that a JWT was really signed by Cognito and hasn't been tampered with.
-
-**DynamoDB** — AWS's managed NoSQL database. No servers to provision, no schema migrations — you define a table's key structure once (here: partition key `user_sub`, sort key `item_id`) and it scales automatically. **On-demand billing mode** (used here) charges purely per request, with no capacity planning and no fixed fee — the simplest mode to reason about for a short test, though provisioned-capacity mode can be cheaper at steady, predictable, high-volume traffic.
-
-**Partition key / Sort key** — DynamoDB's two-part primary key. Items sharing the same partition key (here, all of one user's items) are stored together and can be fetched efficiently with a `Query` — much cheaper and faster than scanning the whole table, which is why `backend/db.py`'s `list_items` uses `Query` but its admin-only `count_all_items` (a full-table count across every user) uses the pricier `Scan` instead, deliberately, since that one genuinely needs to see every item.
-
-**AWS Amplify Hosting** — a static-site/web-app hosting service with built-in CI/CD: point it at a GitHub repo (and a subdirectory, for a monorepo like this one), and it rebuilds and redeploys automatically on every push, with free automatic HTTPS. This is doing for the frontends what Cloud Build did automatically for Cloud Run in the earlier GCP project — except here it's Amplify's own built-in system, not something you wire up separately.
-
-**Amplify "Rewrites and redirects"** — a proxy/routing rule you configure per Amplify app. Used here to forward `/api/*` requests to the backend ALB — important because it keeps the HTTPS frontend from ever directly calling the plain-HTTP backend in the browser (see Section 1).
-
-**ECS, Fargate, Task Definition, Task, Service, Cluster, ALB, Target Group, Listener, Execution Role** — all the same concepts from the earlier `gcp-traditional-arch` project's AWS guide. If you haven't seen those yet, the short version: Fargate runs your container without managing servers; a task definition describes that container; a service keeps a specified number of tasks running and health-checked; an ALB is the load balancer in front of it. See that project's `AWS_DEPLOYMENT_GUIDE.md` for the fuller explanations if needed — this guide focuses on what's new here (Cognito + Amplify) and keeps the ECS/ALB steps brief.
-
----
-
-## 3. Prerequisites
-
-- An AWS account with billing enabled, and an IAM user with console + programmatic access (same as the earlier AWS test project).
-- The code already pushed to GitHub: `https://github.com/Muhammad-Ali500/aws-advance-arch` (already done).
-- A dedicated IAM user for GitHub Actions CI/CD (only needed for the backend — Amplify's CI/CD doesn't need this, it connects directly via OAuth/Console).
-
----
-
-## 4. Cost summary
-
-Full breakdown in `cost.txt`. Short version: **~$0.10–$0.15 for a 3-hour test**, almost entirely the ALB's hourly charge — Amplify Hosting, Cognito, and DynamoDB (on-demand mode) all round to $0.00 at this scale, and there's only one Fargate task (the backend) since both frontends run on Amplify instead.
-
----
-
-## 5. Where things stand already
-
-- All code (both frontends + backend) is written, and **tested locally end-to-end** against `cognito-local` (a real Cognito emulator) and AWS's own official `amazon/dynamodb-local` image — the full auth/authorization matrix was verified with curl before anything was pushed: public access works, missing/invalid tokens are rejected, a regular user can call `/api/me` but gets `403` on `/api/admin/stats`, and an admin user succeeds on both. Both frontend builds were confirmed to each bake in only their own Cognito App Client ID.
-- **DynamoDB integration also tested end-to-end**: a user's created items are only visible to that same user (`GET /api/items` correctly isolates by `user_sub`), while the admin stats endpoint correctly counts items across *all* users via a full-table scan — confirmed with real data from two different test accounts before anything was pushed.
-- Pushed to GitHub already, including the backend's GitHub Actions workflow and both frontends' `amplify.yml` build specs.
-- **Nothing exists on AWS yet** — this guide starts from zero, and per your explicit instruction, nothing will be created on AWS except by you, following these steps yourself.
-
----
-
-## 6. Step 1 — Create the Cognito User Pool
-
-1. Console → **Cognito** → **Create user pool**.
-2. Sign-in options: check **Email** (so users sign in/up with an email address — matches what the frontend code expects).
-3. Password policy: leave defaults, or relax for testing (Cognito's defaults are reasonable for a real deployment).
-4. MFA: **No MFA** (keep this simple for a test).
-5. On the "Configure sign-up experience" page, leave self-registration enabled.
-6. User pool name: `aws-advance-arch-pool`.
-7. Create the pool. **Copy the User Pool ID** (looks like `us-east-1_XXXXXXX`) — you'll need it repeatedly below.
-8. Inside the pool → **App integration** tab → **App clients** → **Create app client**:
-   - Name: `dev-ui`. App type: **Public client** (no client secret — this runs in a browser, a secret couldn't be kept safe there anyway).
-   - Authentication flows: check **ALLOW_USER_PASSWORD_AUTH** and **ALLOW_REFRESH_TOKEN_AUTH**.
-   - Create. **Copy this App Client ID.**
-9. Repeat for a second app client named `dev-admin`, same settings. **Copy its App Client ID too.**
-10. Still in **App integration** → scroll to **Groups** (or find "Groups" in the left sub-menu of the pool) → **Create group**:
-    - Name: `Admins`. Leave the rest default. Create.
-11. Create your two test accounts (or use the self-service sign-up flow from `dev-ui` once it's deployed in Step 11, then come back here to promote one to admin):
-    - Users tab → **Create user** → fill in an email + temporary password → create.
-    - Repeat for a second user you want to be the admin.
-    - For the admin one: open that user → **Group memberships** → **Add to group** → select `Admins`.
-
-> **Note the real User Pool ID and BOTH App Client IDs somewhere handy** - every later step needs them.
-
----
-
-## 7. Step 2 — Create the VPC, subnets, and security groups
-
-(Same pattern as the earlier AWS test project — condensed here since it's not new.)
-
-1. VPC → **Create VPC** → choose **"VPC and more"**.
-2. Name: `aws-advance-arch-vpc`. 2 Availability Zones, 2 public subnets, 0 private subnets, **NAT gateways: None** (keeps cost at $0 for networking, same reasoning as before — Fargate tasks get public IPs directly instead).
-3. Create.
-4. Security Groups → **Create security group**:
-   - `aws-advance-arch-alb-sg`: inbound HTTP (80) from `0.0.0.0/0`.
-   - `aws-advance-arch-tasks-sg`: inbound port `8080` from `aws-advance-arch-alb-sg` only.
-
----
-
-## 8. Step 3 — Create the ECR repository, DynamoDB table, and IAM roles
-
-1. ECR → **Create repository** → name: `aws-advance-arch-backend`. Create.
-2. IAM → **Roles** → **Create role** → AWS service → Elastic Container Service → **Elastic Container Service Task** → attach `AmazonECSTaskExecutionRolePolicy` → name it exactly `ecsTaskExecutionRole` (matches the task definition template). Skip this if you already created this exact role for an earlier project — it's reusable across any ECS task in the account.
-3. **DynamoDB → Create table**:
-   - Table name: `aws-advance-arch-items`.
-   - Partition key: `user_sub` (String). Sort key: `item_id` (String) — matches `backend/db.py` exactly.
-   - Table settings: **Default settings** (this already means on-demand/"Pay-per-request" capacity mode — no capacity planning needed, and no fixed hourly charge either way).
-   - Create.
-4. **Create the backend's task role** (separate from the execution role in step 2 — this one is what the *application code* uses to call DynamoDB, not what ECS itself uses to pull the image/write logs):
-   - IAM → **Roles** → **Create role** → AWS service → Elastic Container Service → **Elastic Container Service Task**.
-   - Attach a policy granting DynamoDB access to just this table — **Create policy** → JSON:
-     ```json
-     {
-       "Version": "2012-10-17",
-       "Statement": [{
-         "Effect": "Allow",
-         "Action": ["dynamodb:PutItem", "dynamodb:Query", "dynamodb:Scan"],
-         "Resource": "arn:aws:dynamodb:<REGION>:<AWS_ACCOUNT_ID>:table/aws-advance-arch-items"
-       }]
-     }
-     ```
-   - Name the role exactly `aws-advance-arch-backend-task-role` (matches the task definition template).
-
----
-
-## 9. Step 4 — Wire up GitHub Actions for the backend's CI/CD
-
-1. IAM → **Users** → **Create user** → name `github-actions-deployer-advance` (or reuse one from an earlier project if you still have it) → attach permissions for ECR push + ECS deploy (or `AdministratorAccess` for a quick test).
-2. That user → **Security credentials** → **Create access key** → "Application running outside AWS" → copy both values.
-3. GitHub repo → **Settings → Secrets and variables → Actions** → add:
-   - `AWS_ACCESS_KEY_ID`
-   - `AWS_SECRET_ACCESS_KEY`
-
----
-
-## 10. Step 5 — Create the ECS cluster, task definition, and service behind an ALB
-
-1. ECS → **Clusters** → **Create cluster** → name `aws-advance-arch-cluster` → AWS Fargate → Create.
-2. Open `aws/backend-task-def.json` locally and replace every placeholder (`<AWS_ACCOUNT_ID>`, `<ACCOUNT_ID>`, `<REGION>`, `<USER_POOL_ID>`, `<DEV_UI_APP_CLIENT_ID>`, `<DEV_ADMIN_APP_CLIENT_ID>`) with your real values from Step 1 and your account. Commit and push that change (this is a config file, not a secret — app client IDs aren't sensitive).
-3. ECS → **Task definitions → Create new task definition → Create new task definition with JSON** → paste the filled-in JSON → Create.
-4. **EC2 → Load Balancers → Create load balancer → Application Load Balancer**:
-   - Name: `aws-advance-arch-alb`. Internet-facing. Your VPC + both public subnets. Security group: `aws-advance-arch-alb-sg`.
-   - Listener: HTTP, port 80.
-   - Default action → create a new target group: `backend-tg`, type **IP**, protocol/port HTTP/8080, health check path `/api/public`.
-   - Create.
-5. ECS → cluster → **Create service**:
-   - Task definition: `aws-advance-arch-backend`. Service name: `backend`. Desired tasks: 1.
-   - Networking: your VPC, both public subnets, security group `aws-advance-arch-tasks-sg`, **Public IP: ON** (no NAT Gateway needed).
-   - Load balancing: Application Load Balancer → `aws-advance-arch-alb` → container `backend:8080` → existing target group `backend-tg`.
-   - Create. Wait for 1/1 running tasks and a healthy target group.
-6. **Copy the ALB's DNS name** (EC2 → Load Balancers → your ALB → "DNS name" field) — you need it for both Amplify rewrite rules below.
-7. Push any commit touching `backend/` to `main` from now on and GitHub Actions redeploys it automatically (already wired up).
-
----
-
-## 11. Step 6 — Deploy dev-ui to Amplify Hosting
-
-1. Console → **Amplify** → **Create new app** → **Deploy an app** → connect your GitHub account → select the `aws-advance-arch` repo, branch `main`.
-2. **App name**: `dev-ui`. Since this is a monorepo, find **"Monorepo"** / **"App root directory"** setting and set it to `dev-ui` — this tells Amplify to treat that subfolder as its own app, using its own `amplify.yml`.
-3. Amplify should auto-detect the build settings from `dev-ui/amplify.yml` — confirm they look right (npm ci, npm run build, artifacts from `dist`).
-4. **Environment variables** (App settings → Environment variables) — add:
-   - `VITE_USER_POOL_ID` = your real User Pool ID
-   - `VITE_USER_POOL_CLIENT_ID` = the **dev-ui** App Client ID (not dev-admin's)
-   - Leave `VITE_COGNITO_ENDPOINT` unset entirely (only used for local testing against cognito-local — Vite/the code falls back to real AWS Cognito's regional endpoint when it's absent).
-5. Save and deploy. Wait for the build to go green.
-6. **Add the API rewrite rule**: App settings → **Rewrites and redirects** → add a rule:
-   - Source address: `/api/<*>`
-   - Target address: `http://<your-ALB-DNS-name>/api/<*>`
-   - Type: **Rewrite (200)** (not a redirect — a rewrite proxies server-side; a redirect would send the browser's own request to the HTTP URL directly, which defeats the whole point).
-7. Save.
-
----
-
-## 12. Step 7 — Deploy dev-admin to Amplify Hosting
-
-Repeat Step 6, with these differences:
-- App root directory: `dev-admin`
-- Environment variable `VITE_USER_POOL_CLIENT_ID` = the **dev-admin** App Client ID
-- Same rewrite rule (`/api/<*>` → your ALB's DNS name) — both apps proxy to the same backend.
-
----
-
-## 13. Step 8 — Test it end-to-end
-
-1. Open dev-ui's Amplify URL (shown on the app's overview page, looks like `https://main.xxxxx.amplifyapp.com`).
-2. Sign up a new account (or sign in with one you created manually in Step 1), confirm via the email code Cognito actually sends now (real AWS Cognito, unlike local testing, sends real email).
-3. Click the button that calls `/api/me` — should show your user info, including an empty `groups` list (unless you added this user to Admins).
-4. Open dev-admin's Amplify URL, sign in as the user you added to the `Admins` group in Step 1.
-5. Call `/api/admin/stats` — should succeed. Try signing into dev-admin as a non-admin user instead — should get a 403, proving the authorization boundary works in the real deployment the same way it did in local testing.
-
----
-
-## 14. Step 9 — Troubleshooting
-
-| Symptom | Likely cause | Fix |
+| Source address | Target address | Type |
 |---|---|---|
-| Amplify build fails at `npm ci` | Root directory not set to `dev-ui`/`dev-admin`, so it's looking in the repo root for `package.json` | App settings → confirm the monorepo root directory setting |
-| Frontend loads but API calls fail with a network/CORS-looking error | Rewrite rule missing or pointing at the wrong ALB DNS name | App settings → Rewrites and redirects → confirm the rule and target host |
-| `/api/me` returns 401 even when signed in | Wrong `VITE_USER_POOL_CLIENT_ID` for that app, or User Pool ID mismatch | Double-check the app's environment variables match the right App Client from Step 1 |
-| `/api/admin/stats` always 403, even for the admin test user | User not actually in the `Admins` group, or signed in via the wrong app client | Cognito console → Users → confirm group membership; confirm you're testing via dev-admin, not dev-ui |
-| ECS task won't reach healthy in the target group | Health check path wrong, or security group blocking ALB→task traffic | Confirm target group health check path is `/api/public`; confirm `aws-advance-arch-tasks-sg` allows inbound 8080 from `aws-advance-arch-alb-sg` |
-| GitHub Actions fails at ECR push | ECR repo not created yet, or IAM user lacks permission | Confirm Step 3 was completed and the secret values are correct |
-| `/api/items` returns 500, or logs show an AWS auth/permission error | Task role missing or not attached, or DynamoDB table name mismatch | Confirm the task definition's `taskRoleArn` is set and the role has the DynamoDB policy from Step 3; confirm `DYNAMODB_TABLE_NAME` matches the real table name exactly |
-| A user sees another user's items | Should never happen if `backend/db.py` is unmodified (it queries by `user_sub` from the verified JWT, not anything client-supplied) | If you've changed the code, double check the partition key is still derived from `claims["sub"]`, never from client input |
+| `/api/<*>` | `http://<ALB DNS name>/api/<*>` | Rewrite (200) |
+| `/auth/<*>` | `http://<ALB DNS name>/auth/<*>` | Rewrite (200) |
+
+   → **Save**.
+6. 🅱 **Hosting → Custom domains → Add domain** → choose your Route 53 zone → subdomain `admin` → branch `main` → **Add domain**.
+
+## 20. Amplify: Frontend (`dev-ui`, Next.js SSR) (10–12 min)
+1. Amplify → **Create new app** → GitHub → same repo, branch `main` → ✔ monorepo → root directory **`dev-ui`** → **Next**.
+2. Build settings must show framework **Next.js - SSR**. If it says static/Web, stop: the root directory is wrong.
+3. **Service role**: **Create and use a new service role**.
+4. **Environment variables** (set them **before** the first build; they're read at build time):
+   - Track A: `API_PROXY_TARGET` = `http://<ALB DNS name>`
+   - 🅱 `NEXT_PUBLIC_API_BASE_URL` = `https://api.practice.yourdomain.com`
+5. **Save and deploy** (~5–7 min). 📋 domain.
+6. 🅱 **Custom domains → Add domain** → your zone → map root (`practice.yourdomain.com`) and **`*`** (wildcard) to `main`.
+
+## 21. CodePipeline: backend CI/CD (6–8 min)
+1. Search **CodePipeline** → **Create pipeline** → **Build custom pipeline** → **Next**.
+2. Name `aws-advance-arch-backend` · Execution mode **Superseded** · Service role **New service role** → **Next**.
+3. **Source**: **GitHub (via GitHub App)** → connection `github` → repo `aws-advance-arch` → branch `main` → **Next**.
+4. **Build**: **Other build providers → AWS CodeBuild** → project `aws-advance-arch-backend-build` → **Next**.
+5. **Test**: **Skip test stage**.
+6. **Deploy**: **Amazon ECS** → cluster `aws-advance-arch-cluster` → service `backend` → Image definitions file `imagedefinitions.json` → **Next** → **Create pipeline**.
+7. It runs immediately: Source ✔ → Build ✔ → Deploy ✔ (~6–8 min). ECS now runs task revision 2.
 
 ---
 
-## 15. Step 10 — Teardown (delete everything)
+# PART 4: Test (15–20 min)
 
-> **⚠️ The ALB is the one resource billing by the hour** — delete it first if you're tearing down in a hurry, then clean up the rest.
+Open the **dev-admin** Amplify URL:
+- [ ] Sign in `admin@example.com` / `TestPass123!` → "signedIn": true
+- [ ] **Cognito: /api/me** → 200, groups `["ADMIN"]`
+- [ ] **DynamoDB + groups: stats** → 200
+- [ ] **S3**, **SQS**, **KMS**, **Secrets Manager** → each `"ok": true`
+- [ ] **NAT egress** → `public_ip` = your NAT Gateway's Elastic IP (VPC → NAT gateways → compare)
+- [ ] Reload, sign in as `user@example.com` → admin buttons return **403**
 
-1. ECS → service → set desired count to 0, then delete the service; delete the cluster.
-2. EC2 → Load Balancers → delete `aws-advance-arch-alb`; Target Groups → delete `backend-tg`.
-3. ECR → delete the `aws-advance-arch-backend` repository.
-4. Amplify → delete both the `dev-ui` and `dev-admin` apps (Console → app → App settings → General → Delete app).
-5. Cognito → delete the `aws-advance-arch-pool` User Pool (this also removes its app clients, groups, and users).
-6. **DynamoDB → delete the `aws-advance-arch-items` table** (this permanently deletes all stored items too — expected and fine for a test).
-7. VPC → delete `aws-advance-arch-vpc` (cleans up its subnets/route tables/internet gateway together).
-8. IAM → delete the `github-actions-deployer-advance` user and its access key, the `aws-advance-arch-backend-task-role` and its custom DynamoDB policy, and the custom policy if you made one (keep `ecsTaskExecutionRole` — it's a standard, reusable, free role).
-9. Double-check: ECS shows no services, EC2 Load Balancers is empty, Amplify shows no apps, and DynamoDB shows no tables — those are the resources that mattered for cost/cleanliness.
+Open the **dev-ui** Amplify URL:
+- [ ] Reload twice → `renderedAt` changes (SSR works)
+- [ ] Sign in → `/api/me` → Add item → List items shows it
+- [ ] DynamoDB console → `aws-advance-arch-items` → **Explore table items** → your item is there
+- [ ] ECS → task → **Logs**: no errors · Target group: healthy
+- [ ] SQS → `waitlist-events` → **Send and receive messages** → **Poll for messages** → the test message is there
+- [ ] Optional CI/CD test: change a backend file in GitHub (e.g. the `/api/public` message) → pipeline redeploys → new message visible
+- [ ] 🅱 `https://api.…/health`, `https://admin.…`, and `https://anything.practice.yourdomain.com` (wildcard) all load
 
 ---
 
-## 16. Appendix: how a request flows through this system
+# PART 5: Teardown (20–25 min). Hourly items first!
 
-1. A user opens `dev-ui`'s Amplify URL and signs in. `amazon-cognito-identity-js` runs the real SRP-based Cognito auth protocol directly against AWS Cognito (no backend involved in login itself) and gets back a JWT access token, stored in the browser.
-2. The user clicks a button that calls `/api/me`. The browser's `fetch` goes to `dev-ui`'s own Amplify domain (`https://main.xxxxx.amplifyapp.com/api/me`) — still HTTPS, still the same origin, no mixed content.
-3. Amplify's edge sees the `/api/*` rewrite rule and forwards the request **server-side** to `http://<alb-dns-name>/api/me`, carrying the `Authorization: Bearer <token>` header through unchanged.
-4. The ALB routes it to a healthy backend task via `backend-tg`.
-5. The backend fetches Cognito's JWKS (cached for an hour), verifies the token's signature and `iss`/`token_use`/`client_id` claims, and returns the decoded user info.
-6. The response travels back through the ALB → Amplify's edge → the browser, which only ever saw its own HTTPS domain throughout.
+1. **ECS**: cluster → **Services** → `backend` → **Delete service** (✔ force delete) → wait → **Delete cluster**.
+2. **EC2 → Load Balancers** → `aws-advance-arch-alb` → **Actions → Delete** → type `confirm`.
+3. **EC2 → Target Groups** → `aws-advance-arch-tg` → Delete.
+4. **VPC → NAT gateways** → select → **Actions → Delete NAT gateway** → wait for **Deleted** (~2 min).
+5. **VPC → Elastic IPs** → select the one that was on the NAT → **Actions → Release Elastic IP addresses**. ⚠ An unreleased EIP keeps billing.
+6. **VPC → Endpoints** → delete the S3 and DynamoDB endpoints → **Your VPCs** → `aws-advance-arch-vpc` → **Actions → Delete VPC** (removes subnets, route tables, IGW, security groups).
+7. **CodePipeline** → delete pipeline · **CodeBuild** → delete project · **Settings → Connections** → delete `github` (optional).
+8. **Amplify** → each app → **App settings → General settings** → **Delete app** (both).
+9. **ECR** → repo → **Delete** (type `delete`).
+10. **Cognito** → user pool → **Delete** (turn off deletion protection first if prompted).
+11. **DynamoDB** → table → **Delete**.
+12. **S3** → bucket → **Empty** → then **Delete**.
+13. **SQS** → delete both queues.
+14. **Secrets Manager** → secret → **Actions → Delete secret** → waiting period **7 days** (no charge while pending).
+15. **KMS** → key → **Key actions → Schedule key deletion** → **7 days** (no charge while pending).
+16. **CloudWatch** → delete log group `/ecs/aws-advance-arch-backend` (and the `/aws/codebuild/...` group).
+17. **IAM → Roles** → delete `aws-advance-arch-ecs-execution-role`, `aws-advance-arch-backend-task-role`, the `codebuild-…` and `AWSCodePipelineServiceRole-…` roles, and the Amplify SSR service role.
+18. 🅱 **Route 53**: delete the `api`/`admin` records → delete the hosted zone (free if deleted within 12 h) → remove the NS delegation record · **ACM**: delete the certificate.
+19. **Check**: EC2 Load Balancers empty · VPC NAT gateways = Deleted · Elastic IPs empty · ECS no clusters · Amplify no apps. Next day, **Billing → Bills** should show a few cents.
 
-`dev-admin` works identically, except its calls to `/api/admin/stats` additionally require the token's `cognito:groups` claim to include `Admins` — enforced entirely in the backend's own code (`require_admin` in `backend/main.py`), not by anything Cognito or the ALB does automatically.
+---
 
-When a user calls `POST /api/items` or `GET /api/items`, the backend uses the verified token's `sub` claim (never anything the client sends directly) as the DynamoDB partition key — this is what makes one user's items structurally invisible to another user's queries, rather than relying on application logic alone to filter them out after the fact.
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| CodeBuild fails at `docker login` / push | Build role is missing `AmazonEC2ContainerRegistryPowerUser` (step 11.3), or **Privileged** isn't ticked |
+| Task stops immediately | Task → *Stopped reason* + Logs. Check task definition placeholders, secret name `slotta-dummy/app`, task role policy ARNs |
+| `CannotPullContainerError` | No `latest` tag in ECR (rerun step 11.4) or the task isn't in private subnets with the NAT |
+| Target unhealthy | Tasks SG must allow **3000 from the ALB SG**; health path `/health`; port 3000 on the target group |
+| Login says `NotAuthorizedException` | Wrong password, or the user isn't **Confirmed** (rerun the CloudShell commands, step 7.9) |
+| Login says `InvalidParameterException ... ADMIN_USER_PASSWORD_AUTH` | Enable that auth flow on the app client (step 7.6) |
+| `/api/me` → 401 Wrong token type or app client | `COGNITO_CLIENT_ID` in the task definition doesn't match the app client |
+| Admin buttons 503 "not configured" | The env var for that service is empty in the task definition |
+| S3/SQS/KMS → 500 + `AccessDenied` in logs | Placeholder left in the task role policy |
+| Egress → 502 | Private route table has no route to the NAT gateway |
+| dev-admin API calls return HTML / 404 | Track A rewrites missing or wrong ALB DNS name (step 19.5) |
+| dev-ui API calls 404 | `API_PROXY_TARGET` was set after the build → **Redeploy this version** |
+| dev-ui shows a static page / `renderedAt` never changes | App not deployed as **Next.js - SSR**: recreate with root directory `dev-ui` |
+| Amplify build fails at `npm ci` | Lock file not pushed, or the monorepo root directory is wrong |

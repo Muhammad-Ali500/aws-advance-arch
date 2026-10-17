@@ -4,31 +4,42 @@
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "256",
   "memory": "512",
-  "executionRoleArn": "arn:aws:iam::<AWS_ACCOUNT_ID>:role/ecsTaskExecutionRole",
+  "runtimePlatform": { "cpuArchitecture": "X86_64", "operatingSystemFamily": "LINUX" },
+  "executionRoleArn": "arn:aws:iam::<AWS_ACCOUNT_ID>:role/aws-advance-arch-ecs-execution-role",
   "taskRoleArn": "arn:aws:iam::<AWS_ACCOUNT_ID>:role/aws-advance-arch-backend-task-role",
   "containerDefinitions": [
     {
       "name": "backend",
-      "image": "<ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/aws-advance-arch-backend:placeholder",
+      "image": "<AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/aws-advance-arch-backend:latest",
       "essential": true,
       "portMappings": [
-        { "containerPort": 8080, "protocol": "tcp" }
+        { "containerPort": 3000, "protocol": "tcp", "appProtocol": "http" }
       ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/health || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      },
       "environment": [
-        { "name": "COGNITO_ISSUER", "value": "https://cognito-idp.<REGION>.amazonaws.com/<USER_POOL_ID>" },
-        { "name": "COGNITO_JWKS_URL", "value": "https://cognito-idp.<REGION>.amazonaws.com/<USER_POOL_ID>/.well-known/jwks.json" },
-        { "name": "COGNITO_APP_CLIENT_IDS", "value": "<DEV_UI_APP_CLIENT_ID>,<DEV_ADMIN_APP_CLIENT_ID>" },
-        { "name": "ADMIN_GROUP_NAME", "value": "Admins" },
+        { "name": "AWS_REGION", "value": "us-east-1" },
+        { "name": "PORT", "value": "3000" },
+        { "name": "COGNITO_USER_POOL_ID", "value": "<USER_POOL_ID>" },
+        { "name": "COGNITO_CLIENT_ID", "value": "<APP_CLIENT_ID>" },
+        { "name": "ALLOWED_ORIGINS", "value": "https://<ADMIN_AMPLIFY_DOMAIN>,https://<UI_AMPLIFY_DOMAIN>" },
+        { "name": "APP_SECRET_ID", "value": "slotta-dummy/app" },
         { "name": "DYNAMODB_TABLE_NAME", "value": "aws-advance-arch-items" },
-        { "name": "AWS_REGION", "value": "<REGION>" }
+        { "name": "LOGO_BUCKET", "value": "<LOGO_BUCKET_NAME>" },
+        { "name": "WAITLIST_EVENTS_QUEUE_URL", "value": "https://sqs.us-east-1.amazonaws.com/<AWS_ACCOUNT_ID>/waitlist-events" },
+        { "name": "CALENDAR_TOKENS_KMS_KEY_ID", "value": "<KMS_KEY_ARN>" }
       ],
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
           "awslogs-group": "/ecs/aws-advance-arch-backend",
-          "awslogs-region": "<REGION>",
-          "awslogs-stream-prefix": "ecs",
-          "awslogs-create-group": "true"
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
         }
       }
     }
